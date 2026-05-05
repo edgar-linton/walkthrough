@@ -1,0 +1,22 @@
+[package]
+name = "walkthrough"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A Rust crate for recursive directory traversal."
+repository = "https://github.com/edgar-linton/walkthrough"
+
+[features]
+default = []
+async = ["dep:tokio"]
+
+
+[dependencies]
+thiserror = "2.0.18"
+tokio = { version = "1.52.2", features = [
+    "fs",
+    "rt-multi-thread",
+], optional = true }
+
+[dev-dependencies]
+tree-fs = { version = "0.3.1", features = ["yaml"] }

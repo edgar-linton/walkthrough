@@ -1,0 +1,23 @@
+override_file: true
+entries:
+  - path: file0a
+    type: empty_file
+  - path: .hidden0a
+    type: empty_file
+  - path: dir1a
+    type: directory
+    entries:
+      - path: file1a_a
+        type: emtpy_file
+      - path: dir2a
+        type: directory
+        entries:
+          - path: file2a_a
+            type: empty_file
+          - path: dir2a
+            type: directory
+  - path: dir1b
+    type: directory
+    entries:
+      - path: file1b_a
+        type: empty_file

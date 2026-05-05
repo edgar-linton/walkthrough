@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug executable 'rise-dmp-share'",
+      "cargo": {
+        "args": ["build", "--bin=rise-dmp-share", "--package=rise-dmp-share"],
+        "filter": {
+          "name": "rise-dmp-share",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests in executable 'rise-dmp-share'",
+      "cargo": {
+        "args": ["test", "--no-run", "--bin=rise-dmp-share", "--package=rise-dmp-share"],
+        "filter": {
+          "name": "rise-dmp-share",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
