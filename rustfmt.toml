@@ -1,0 +1,5 @@
+format_code_in_doc_comments = true
+group_imports = "StdExternalCrate"
+format_strings = true
+use_small_heuristics = "Default"
+edition = "2024"
