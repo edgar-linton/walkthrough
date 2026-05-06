@@ -1,0 +1,19 @@
+name: Setup Rust
+description: >
+  Install the stable Rust toolchain, populate the build cache, and install
+  just. Must be called after actions/checkout because it is a local action.
+
+inputs:
+  components:
+    description: Additional rustup components (e.g. 'rustfmt, clippy' or 'llvm-tools-preview')
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+    - uses: Swatinem/rust-cache@v2
+    - uses: extractions/setup-just@v2
