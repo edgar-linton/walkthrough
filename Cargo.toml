@@ -10,11 +10,13 @@ keywords = ["filesystem", "walkdir", "recursive", "iterator"]
 categories = ["filesystem", "os"]
 
 [dependencies]
-once_cell = "1.21"
 thiserror = "2.0"
 
+[target.'cfg(unix)'.dependencies]
+once_cell = "1.21"
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_Foundation",
 ] }

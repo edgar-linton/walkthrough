@@ -1,56 +1,66 @@
-# Walkthrough
+# walkthrough
 
 [![Crates.io](https://img.shields.io/crates/v/walkthrough.svg)](https://crates.io/crates/walkthrough)
-[![Documentation](https://docs.rs/walkthrough/badge.svg)](https://docs.rs/walkthrough)
+[![docs.rs](https://docs.rs/walkthrough/badge.svg)](https://docs.rs/walkthrough)
+[![CI](https://github.com/edgar-linton/walkthrough/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/edgar-linton/walkthrough/actions/workflows/rust-ci.yml)
 
-A robust, performant, and highly configurable recursive directory iterator for Rust. This crate allows you to traverse file systems efficiently with fine-grained control over depth, sorting, and metadata.
+A recursive directory iterator for Rust with depth control, symlink loop detection, sorting, and hidden-file filtering.
 
-## ✨ Features
-
-- 🚀 **Lazy Iteration** – Results are computed on the fly, keeping memory usage minimal even for massive trees.
-- 🛡️ **Cycle Protection** – Built-in symbolic link loop detection to prevent infinite recursion.
-- 🔧 **Highly Configurable** – Precise control over `min_depth`, `max_depth`, and hidden file visibility.
-- 📂 **Smart Ordering** – Support for custom sorting and grouping directories before files.
-
-## Examples
-
-### Basic
+## Usage
 
 ```rust
 use walkthrough::WalkDir;
 
-fn main() {
-    let walker = WalkDir::new("./my_project")
-        .min_depth(1)
-        .max_depth(5)
-        .skip_hidden(true);
-
-    for entry in walker {
-        match entry {
-            Ok(entry) => println!("Path: {}", entry.path().display()),
-            Err(err) => eprintln!("Error walking directory: {}", err),
-        }
+for entry in WalkDir::new("./my_project").min_depth(1).max_depth(5).skip_hidden(true) {
+    match entry {
+        Ok(e)  => println!("{}", e.path().display()),
+        Err(e) => eprintln!("error: {e}"),
     }
 }
 ```
 
-### Sorting & Grouping
+## Configuration
 
-You can group directories first or provide a custom sorting function:
+| Method               | Default   | Description                                      |
+| -------------------- | --------- | ------------------------------------------------ |
+| `min_depth(n)`       | `0`       | Skip entries shallower than `n`                  |
+| `max_depth(n)`       | unlimited | Skip entries deeper than `n`                     |
+| `follow_links(bool)` | `false`   | Follow symbolic links                            |
+| `skip_hidden(bool)`  | `false`   | Omit dot-files and dot-directories               |
+| `group_dir(bool)`    | `false`   | Yield directories before files at each level     |
+| `sort_by(fn)`        | none      | Custom comparator for entries within a directory |
+
+### Sorting example
 
 ```rust
+use walkthrough::WalkDir;
+
 let walker = WalkDir::new(".")
-    .group_dir(true) // Directories appear before files
-    .sort_by(|a, b| a.file_name().cmp(b.file_name())); // Alphabetic sort
+    .group_dir(true)
+    .sort_by(|a, b| a.file_name().cmp(b.file_name()));
 ```
 
-## 🧠 How it Works
+## How it works
 
-The walker uses a stack-based approach to navigate the file system tree. It yields the root entry first and then descends into subdirectories based on your configuration.
+The walker maintains a stack of open directory iterators. Each directory is read, optionally sorted, and pushed onto the stack. On backtracking the stack is popped, keeping memory proportional to the depth of the tree rather than its total size.
 
-- Loop Detection: When follow_links is enabled, the walker tracks directory ancestors using unique identifiers to prevent getting stuck in symlink cycles.
-- Depth Control: The max_depth and min_depth filters ensure you only see the parts of the tree you are interested in.
+Symlink loop detection compares device/inode identifiers (or equivalent) of every ancestor in the current path. A loop is reported as an error and traversal continues.
 
-## ⚖️ License
+## Development
 
-Licensed under either of Apache License, Version 2.0 or MIT license at your option.
+[`just`](https://github.com/casey/just) is used to run common tasks:
+
+```
+just fmt              # check formatting
+just clippy           # run linter
+just test             # run all tests
+just ci               # full CI suite
+```
+
+## Roadmap
+
+- [ ] Async support (`tokio` / `async-std`)
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.

@@ -38,32 +38,38 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 impl Error {
     /// Returns the filesystem path at which this error occurred.
+    #[inline]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Returns the traversal depth at which this error occurred.
+    #[inline]
     pub fn depth(&self) -> usize {
         self.depth
     }
 
     /// Returns the kind of this error.
+    #[inline]
     pub fn kind(&self) -> &ErrorKind {
         &self.kind
     }
 
     /// Returns `true` if this error wraps an [`io::Error`].
+    #[inline]
     pub fn is_io(&self) -> bool {
         matches!(self.kind, ErrorKind::Io(_))
     }
 
     /// Returns `true` if this error is a symlink loop detection.
+    #[inline]
     pub fn is_loop(&self) -> bool {
         matches!(self.kind, ErrorKind::LoopDetected)
     }
 
     /// Returns a reference to the inner [`io::Error`], or `None` if this is
     /// not an I/O error.
+    #[inline]
     pub fn io_error(&self) -> Option<&io::Error> {
         match &self.kind {
             ErrorKind::Io(e) => Some(e),
@@ -73,9 +79,10 @@ impl Error {
 
     /// Consumes `self` and returns the inner [`io::Error`], or `None` if this
     /// is not an I/O error.
+    #[inline]
     pub fn into_io_error(self) -> Option<io::Error> {
         match self.kind {
-            ErrorKind::Io(e) => Some(e),
+            ErrorKind::Io(err) => Some(err),
             ErrorKind::LoopDetected => None,
         }
     }

@@ -1,18 +1,48 @@
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Unit Tests",
+      "cargo": {
+        "args": ["test", "--no-run", "--lib", "--package=walkthrough"],
+        "filter": { "kind": "test" }
+      },
+      "args": [],
+      "env": { "RUST_BACKTRACE": "1" },
+      "cwd": "${workspaceFolder}"
+    },
     {
       "type": "lldb",
       "request": "launch",
       "name": "Debug Integration Tests",
       "cargo": {
-        "args": ["test", "--no-run", "--package=walkthrough"],
-        "filter": {
-          "kind": "test"
-        }
+        "args": ["test", "--no-run", "--tests", "--package=walkthrough"],
+        "filter": { "kind": "test" }
       },
       "args": [],
+      "env": { "RUST_BACKTRACE": "1" },
       "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Test: ${input:testName}",
+      "cargo": {
+        "args": ["test", "--no-run", "--package=walkthrough"],
+        "filter": { "kind": "test" }
+      },
+      "args": ["${input:testName}", "--nocapture"],
+      "env": { "RUST_BACKTRACE": "1" },
+      "cwd": "${workspaceFolder}"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "testName",
+      "type": "promptString",
+      "description": "Test name filter (substring match)"
     }
   ]
 }

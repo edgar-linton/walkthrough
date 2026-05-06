@@ -1,8 +1,16 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{DirEntryExt, MetadataExt},
+    },
+    path::PathBuf,
+};
 
-use crate::Error;
+use once_cell::sync::OnceCell;
 
 use super::entry::DirEntry;
+use crate::Error;
 
 impl DirEntry {
     /// Returns the metadata for this entry.
@@ -21,15 +29,10 @@ impl DirEntry {
 
     /// Returns `true` if this entry is hidden (name starts with `.`).
     pub fn is_hidden(&self) -> bool {
-        use std::os::unix::ffi::OsStrExt;
-
         self.file_name().as_bytes().starts_with(b".")
     }
 
     pub(crate) fn from_path(path: PathBuf, depth: usize, follow_link: bool) -> Result<Self, Error> {
-        use once_cell::sync::OnceCell;
-        use std::os::unix::fs::MetadataExt;
-
         let raw = fs::symlink_metadata(&path)
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
         let mut file_type = raw.file_type();
@@ -59,9 +62,6 @@ impl DirEntry {
         depth: usize,
         follow_link: bool,
     ) -> Result<Self, Error> {
-        use once_cell::sync::OnceCell;
-        use std::os::unix::fs::{DirEntryExt, MetadataExt};
-
         let path = entry.path();
         let mut file_type = entry
             .file_type()
@@ -87,8 +87,6 @@ impl DirEntry {
     }
 
     pub(crate) fn ancestor(&self) -> Option<Ancestor> {
-        use std::os::unix::fs::MetadataExt;
-
         let metadata = self.metadata().ok()?;
         Some(Ancestor {
             dev: metadata.dev(),
@@ -97,7 +95,7 @@ impl DirEntry {
     }
 }
 
-impl std::os::unix::fs::DirEntryExt for DirEntry {
+impl DirEntryExt for DirEntry {
     fn ino(&self) -> u64 {
         self.ino
     }

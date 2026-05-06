@@ -212,20 +212,20 @@ impl Iterator for Walker {
         }
 
         loop {
-            let res = match self.stack.last_mut() {
-                None => return None,
-                Some(iter) => match iter.next() {
+            let res = {
+                let iter = self.stack.last_mut()?;
+                match iter.next() {
                     Some(res) => res,
                     None => {
                         self.stack.pop();
                         continue;
                     }
-                },
+                }
             };
 
             let entry = match res {
-                Err(e) => return Some(Err(e)),
-                Ok(e) => e,
+                Err(err) => return Some(Err(err)),
+                Ok(err) => err,
             };
 
             if self.opts.skip_hidden && entry.is_hidden() {
