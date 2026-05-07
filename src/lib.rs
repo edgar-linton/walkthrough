@@ -27,8 +27,23 @@
 //!     }
 //! }
 //! ```
+
+// Unsupported targets produce a clear compile error rather than a cryptic
+// "method not found" cascade from the missing platform-specific impl modules.
+#[cfg(not(any(unix, windows)))]
+compile_error!("walkthrough only supports Unix and Windows targets");
+
+mod entry;
 mod error;
+mod iter;
 mod sync;
 
+#[cfg(feature = "async")]
+pub mod r#async;
+#[cfg(feature = "async")]
+pub use r#async::{Async, AsyncDirEntry, AsyncWalkDir, AsyncWalker};
+pub(crate) use entry::Ancestor;
+pub use entry::DirEntry;
 pub use error::{Error, ErrorKind, Result};
-pub use sync::{DirEntry, WalkDir, Walker};
+pub use iter::WalkDir;
+pub use sync::{Sync, Walker};

@@ -1,6 +1,6 @@
 [package]
 name = "walkthrough"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Edgar Linton <150683481+edgar-linton@users.noreply.github.com>"]
 edition = "2024"
 description = "A Rust crate for recursive directory traversal."
@@ -9,8 +9,13 @@ license = "MIT OR Apache-2.0"
 keywords = ["filesystem", "walkdir", "recursive", "iterator"]
 categories = ["filesystem", "os"]
 
+[features]
+default = []
+async = ["dep:tokio"]
+
 [dependencies]
 thiserror = "2.0"
+tokio = { version = "1.52", features = ["fs"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 once_cell = "1.21"
@@ -24,3 +29,4 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }
