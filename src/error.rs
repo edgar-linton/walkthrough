@@ -87,7 +87,7 @@ impl Error {
         }
     }
 
-    pub(crate) fn from_entry(entry: &DirEntry, source: io::Error) -> Self {
+    pub(crate) fn from_entry<T>(entry: &DirEntry<T>, source: io::Error) -> Self {
         Self {
             path: entry.path().to_path_buf(),
             depth: entry.depth(),
