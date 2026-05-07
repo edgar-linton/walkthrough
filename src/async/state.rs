@@ -209,6 +209,16 @@ impl AsyncWalker {
         Ok(entries)
     }
 
+    /// Converts this walker into a [`futures_core::Stream`].
+    pub fn into_stream(self) -> impl futures_core::Stream<Item = Result<DirEntry<Async>>> {
+        async_stream::stream! {
+            let mut walker = self;
+            while let Some(entry) = walker.next().await {
+                yield entry;
+            }
+        }
+    }
+
     /// Returns the next entry.
     pub async fn next(&mut self) -> Option<Result<DirEntry<Async>>> {
         if let Some(res) = self.start.take() {
