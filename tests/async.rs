@@ -560,7 +560,7 @@ async fn test_async_unix_direntry_ino_is_nonzero() {
     use std::os::unix::fs::DirEntryExt;
 
     let tmp = basic_tree();
-    let entry = walk_ok(WalkDir::new(tmp.path()))
+    let entry = walk_ok(AsyncWalkDir::new(tmp.path()))
         .await
         .into_iter()
         .next()

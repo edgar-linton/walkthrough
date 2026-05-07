@@ -1,4 +1,5 @@
 use std::{
+    fs as std_fs,
     marker::PhantomData,
     os::unix::{
         ffi::OsStrExt,
@@ -14,7 +15,7 @@ use super::state::Async;
 use crate::{Ancestor, DirEntry, Error};
 
 impl DirEntry<Async> {
-    pub(super) async fn metadata_impl(&self) -> Result<fs::Metadata, Error> {
+    pub(super) async fn metadata_impl(&self) -> Result<std_fs::Metadata, Error> {
         // Return the cached value if a previous call already resolved it.
         if let Some(m) = self.metadata.get() {
             return Ok(m.clone());

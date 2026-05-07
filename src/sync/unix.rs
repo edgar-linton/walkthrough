@@ -10,7 +10,7 @@ use std::{
 
 use once_cell::sync::OnceCell;
 
-use crate::{Ancestor, Error};
+use crate::{Ancestor, DirEntry, Error};
 
 impl DirEntry {
     pub(super) fn metadata_impl(&self) -> Result<fs::Metadata, Error> {
