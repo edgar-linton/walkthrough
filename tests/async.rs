@@ -283,6 +283,154 @@ async fn test_async_group_dir_places_dirs_before_files() {
     }
 }
 
+/// A tree whose file sizes are deliberately at odds with their names, so an
+/// ordering by size cannot pass by accident.
+///
+/// ```text
+/// root/
+///   big     (3 bytes)
+///   small   (1 byte)
+///   sub/
+///     medium  (2 bytes)
+///     tiny    (0 bytes)
+/// ```
+fn sized_tree() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let r = tmp.path();
+    fs::write(r.join("big"), "aaa").unwrap();
+    fs::write(r.join("small"), "a").unwrap();
+    let sub = r.join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("medium"), "aa").unwrap();
+    fs::write(sub.join("tiny"), "").unwrap();
+    tmp
+}
+
+async fn file_names_at_depth1(walk: AsyncWalkDir) -> Vec<String> {
+    walk_ok(walk)
+        .await
+        .into_iter()
+        .filter(|e| e.depth() == 1 && !e.is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The regression this exists for: an ordering by size is expressible at all. A
+/// synchronous comparator cannot await `metadata`, and blocking on it panics —
+/// on a multi-threaded runtime with "Cannot start a runtime from within a
+/// runtime".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_sort_by_metadata_orders_by_size_on_a_multi_thread_runtime() {
+    let tmp = sized_tree();
+
+    let names =
+        file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by_metadata(|m| m.len())).await;
+
+    assert_eq!(names, vec!["small", "big"]);
+}
+
+/// The current-thread runtime is the other half of the regression: there a
+/// blocking comparator deadlocks rather than panicking.
+#[tokio::test(flavor = "current_thread")]
+async fn test_async_sort_by_metadata_orders_by_size_on_a_current_thread_runtime() {
+    let tmp = sized_tree();
+
+    let names =
+        file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by_metadata(|m| m.len())).await;
+
+    assert_eq!(names, vec!["small", "big"]);
+}
+
+/// The ordering is per directory, as with `sort_by` — not one global ordering
+/// across the walk. `sub/` is followed by its own entries, smallest first.
+#[tokio::test]
+async fn test_async_sort_by_metadata_orders_within_each_directory() {
+    let tmp = sized_tree();
+
+    let names: Vec<String> = walk_ok(AsyncWalkDir::new(tmp.path()).sort_by_metadata(|m| m.len()))
+        .await
+        .into_iter()
+        .filter(|e| e.depth() > 0)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+
+    let sub = names.iter().position(|n| n == "sub").unwrap();
+    let tiny = names.iter().position(|n| n == "tiny").unwrap();
+    let medium = names.iter().position(|n| n == "medium").unwrap();
+    assert!(
+        sub < tiny && tiny < medium,
+        "`sub/` must be followed by its own entries, smallest first: {names:?}"
+    );
+}
+
+/// Descending order is the key's business, not a second method.
+#[tokio::test]
+async fn test_async_sort_by_metadata_reverses_with_reverse() {
+    use std::cmp::Reverse;
+
+    let tmp = sized_tree();
+
+    let names =
+        file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by_metadata(|m| Reverse(m.len())))
+            .await;
+
+    assert_eq!(names, vec!["big", "small"]);
+}
+
+/// `group_dir` still wins over the key, exactly as it does over `sort_by`.
+#[tokio::test]
+async fn test_async_sort_by_metadata_composes_with_group_dir() {
+    let tmp = sized_tree();
+
+    let depth1 = walk_ok(
+        AsyncWalkDir::new(tmp.path())
+            .sort_by_metadata(|m| m.len())
+            .group_dir(true),
+    )
+    .await
+    .into_iter()
+    .filter(|e| e.depth() == 1)
+    .collect::<Vec<_>>();
+
+    assert!(depth1[0].is_dir(), "the directory must come first");
+    let files: Vec<String> = depth1
+        .iter()
+        .filter(|e| !e.is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(files, vec!["small", "big"], "the key orders the files");
+}
+
+/// The two orderings are mutually exclusive; whichever was configured last runs.
+#[tokio::test]
+async fn test_async_last_ordering_call_wins() {
+    let tmp = sized_tree();
+
+    let by_name = file_names_at_depth1(
+        AsyncWalkDir::new(tmp.path())
+            .sort_by_metadata(|m| m.len())
+            .sort_by(|a, b| a.file_name().cmp(b.file_name())),
+    )
+    .await;
+    let by_size = file_names_at_depth1(
+        AsyncWalkDir::new(tmp.path())
+            .sort_by(|a, b| a.file_name().cmp(b.file_name()))
+            .sort_by_metadata(|m| m.len()),
+    )
+    .await;
+
+    assert_eq!(
+        by_name,
+        vec!["big", "small"],
+        "name ordering configured last"
+    );
+    assert_eq!(
+        by_size,
+        vec!["small", "big"],
+        "key ordering configured last"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Sorted + unsorted in the same walk: root level unsorted, subdir sorted
 // (covers both DirStream variants being used in one traversal)

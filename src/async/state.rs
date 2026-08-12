@@ -13,6 +13,27 @@ use crate::{DirEntry, Error, Result, iter::WalkDirOptions};
 #[derive(Debug)]
 pub struct Async;
 
+/// Orders two entries by their metadata.
+///
+/// Built from the key function handed to [`AsyncWalkDir::sort_by_metadata`], which
+/// is why the key type does not appear here: it is captured in the closure, so one
+/// field can hold an ordering by any [`Ord`] key without the walker becoming
+/// generic over it.
+#[allow(clippy::type_complexity)]
+struct MetadataSorter(Box<dyn Fn(&std::fs::Metadata, &std::fs::Metadata) -> Ordering + Send>);
+
+impl MetadataSorter {
+    fn cmp(&self, a: &std::fs::Metadata, b: &std::fs::Metadata) -> Ordering {
+        (self.0)(a, b)
+    }
+}
+
+impl fmt::Debug for MetadataSorter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MetadataSorter")
+    }
+}
+
 // Stack item: pre-sorted entries (when sort_by or group_dir is set) or a live
 // ReadDir handle (the common unsorted case, which avoids collecting upfront).
 enum DirStream {
@@ -63,6 +84,7 @@ impl DirStream {
 pub struct AsyncWalkDir {
     root: PathBuf,
     opts: WalkDirOptions<Async>,
+    sort_by_metadata: Option<MetadataSorter>,
 }
 
 impl AsyncWalkDir {
@@ -71,6 +93,7 @@ impl AsyncWalkDir {
         Self {
             root: root.as_ref().to_path_buf(),
             opts: WalkDirOptions::default(),
+            sort_by_metadata: None,
         }
     }
 
@@ -105,11 +128,63 @@ impl AsyncWalkDir {
     }
 
     /// Sets the comparison function used to sort entries within each directory.
+    ///
+    /// The comparison is synchronous, so it can only read what a [`DirEntry`]
+    /// offers without I/O: path, file name, file type, depth. Ordering by
+    /// metadata belongs to [`Self::sort_by_metadata`] — a comparator cannot await
+    /// [`DirEntry::metadata`], and blocking on it from inside a comparator panics
+    /// on a Tokio runtime.
+    ///
+    /// Mutually exclusive with [`Self::sort_by_metadata`]: the last call wins.
     pub fn sort_by<F>(mut self, cmp: F) -> Self
     where
         F: FnMut(&DirEntry<Async>, &DirEntry<Async>) -> Ordering + Send + 'static,
     {
         self.opts.sort_by = Some(crate::iter::Sorter(Box::new(cmp)));
+        self.sort_by_metadata = None;
+        self
+    }
+
+    /// Sorts the entries within each directory by a key taken from their
+    /// metadata.
+    ///
+    /// The walker fetches each entry's metadata once, before ordering, so the key
+    /// function itself does no I/O and an ordering by size or timestamp costs one
+    /// `stat` per entry — not one per comparison, which is what a comparator over
+    /// [`DirEntry::metadata`] would cost even if it could await.
+    ///
+    /// Entries whose metadata could not be read keep their place ahead of the
+    /// readable ones, next to the entries that failed outright, as with
+    /// [`Self::sort_by`]. [`Self::group_dir`] still applies afterwards, and
+    /// descending order is expressed by the key, e.g. [`std::cmp::Reverse`].
+    ///
+    /// Mutually exclusive with [`Self::sort_by`]: the last call wins.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn run() -> walkthrough::Result<()> {
+    /// use walkthrough::AsyncWalkDir;
+    ///
+    /// // Smallest file first, within every directory.
+    /// let mut walker = AsyncWalkDir::new("src")
+    ///     .sort_by_metadata(|meta| meta.len())
+    ///     .walker()
+    ///     .await;
+    ///
+    /// while let Some(entry) = walker.next().await {
+    ///     println!("{:?}", entry?.path());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn sort_by_metadata<K, F>(mut self, key: F) -> Self
+    where
+        F: Fn(&std::fs::Metadata) -> K + Send + 'static,
+        K: Ord,
+    {
+        self.sort_by_metadata = Some(MetadataSorter(Box::new(move |a, b| key(a).cmp(&key(b)))));
+        self.opts.sort_by = None;
         self
     }
 
@@ -121,6 +196,7 @@ impl AsyncWalkDir {
             stack: vec![],
             ancestors: vec![],
             opts: self.opts,
+            sort_by_metadata: self.sort_by_metadata,
         }
     }
 }
@@ -129,6 +205,7 @@ impl AsyncWalkDir {
 #[derive(Debug)]
 pub struct AsyncWalker {
     opts: WalkDirOptions<Async>,
+    sort_by_metadata: Option<MetadataSorter>,
     ancestors: Vec<crate::Ancestor>,
     stack: Vec<DirStream>,
     start: Option<Result<DirEntry<Async>>>,
@@ -150,7 +227,7 @@ impl AsyncWalker {
         let child_depth = depth + 1;
         let follow_links = self.opts.follow_links;
 
-        if self.opts.sort_by.is_some() || self.opts.group_dir {
+        if self.opts.sort_by.is_some() || self.sort_by_metadata.is_some() || self.opts.group_dir {
             let entries = self.collect_sorted(&path, child_depth).await?;
             self.stack.push(DirStream::Sorted(entries.into_iter()));
         } else {
@@ -189,7 +266,25 @@ impl AsyncWalker {
             }
         }
 
-        if let Some(ref mut sorter) = self.opts.sort_by {
+        if let Some(ref sorter) = self.sort_by_metadata {
+            // Decorate, sort, undecorate: the metadata is fetched once per entry
+            // instead of once per comparison.
+            let mut decorated = Vec::with_capacity(entries.len());
+            for entry in entries.drain(..) {
+                let meta = match &entry {
+                    Ok(entry) => entry.metadata().await.ok(),
+                    Err(_) => None,
+                };
+                decorated.push((meta, entry));
+            }
+            decorated.sort_by(|(a, _), (b, _)| match (a, b) {
+                (Some(a), Some(b)) => sorter.cmp(a, b),
+                (None, Some(_)) => Ordering::Less,
+                (Some(_), None) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            });
+            entries.extend(decorated.into_iter().map(|(_, entry)| entry));
+        } else if let Some(ref mut sorter) = self.opts.sort_by {
             entries.sort_by(|a, b| match (a, b) {
                 (Ok(a), Ok(b)) => sorter.cmp(a, b),
                 (Err(_), Ok(_)) => Ordering::Less,
