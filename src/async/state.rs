@@ -1,7 +1,10 @@
 use std::{
     cmp::Ordering,
     fmt,
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
     vec,
 };
 
@@ -13,25 +16,68 @@ use crate::{DirEntry, Error, Result, iter::WalkDirOptions};
 #[derive(Debug)]
 pub struct Async;
 
-/// Orders two entries by their metadata.
-///
-/// Built from the key function handed to [`AsyncWalkDir::sort_by_metadata`], which
-/// is why the key type does not appear here: it is captured in the closure, so one
-/// field can hold an ordering by any [`Ord`] key without the walker becoming
-/// generic over it.
-#[allow(clippy::type_complexity)]
-struct MetadataSorter(Box<dyn Fn(&std::fs::Metadata, &std::fs::Metadata) -> Ordering + Send>);
+type SortFuture = Pin<Box<dyn Future<Output = Vec<Result<DirEntry<Async>>>> + Send>>;
 
-impl MetadataSorter {
-    fn cmp(&self, a: &std::fs::Metadata, b: &std::fs::Metadata) -> Ordering {
-        (self.0)(a, b)
+/// Orders the entries of one directory by an asynchronously computed key.
+///
+/// Holds the whole decorate-sort-undecorate step rather than the key function,
+/// which is why the key type does not appear here: [`AsyncWalkDir::sort_by`]
+/// monomorphises the step and stores it as one closure, so the walker can order
+/// entries by any [`Ord`] key without becoming generic over it.
+///
+/// `Sync` as well as `Send`, because the walker borrows the sorter across an
+/// `await` and a walk has to stay spawnable.
+#[allow(clippy::type_complexity)]
+struct Sorter(Box<dyn Fn(Vec<Result<DirEntry<Async>>>) -> SortFuture + Send + Sync>);
+
+impl Sorter {
+    async fn sort(&self, entries: Vec<Result<DirEntry<Async>>>) -> Vec<Result<DirEntry<Async>>> {
+        (self.0)(entries).await
     }
 }
 
-impl fmt::Debug for MetadataSorter {
+impl fmt::Debug for Sorter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("MetadataSorter")
+        f.write_str("Sorter")
     }
+}
+
+/// Orders `entries` by `key`, awaiting the key of every entry exactly once.
+///
+/// The entry is shared with the key function through an [`Arc`] and recovered
+/// afterwards, so metadata the key resolved stays cached on the entry the walker
+/// goes on to yield.
+async fn sort_by_key<K, Fut, F>(
+    key: Arc<F>,
+    entries: Vec<Result<DirEntry<Async>>>,
+) -> Vec<Result<DirEntry<Async>>>
+where
+    F: Fn(Arc<DirEntry<Async>>) -> Fut,
+    Fut: Future<Output = K>,
+    K: Ord,
+{
+    let mut decorated: Vec<(Option<K>, Result<DirEntry<Async>>)> =
+        Vec::with_capacity(entries.len());
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let shared = Arc::new(entry);
+                let k = key(Arc::clone(&shared)).await;
+                decorated.push((Some(k), Ok(Arc::unwrap_or_clone(shared))));
+            }
+            // An entry that failed outright has no key; it sorts ahead of the rest.
+            Err(err) => decorated.push((None, Err(err))),
+        }
+    }
+
+    decorated.sort_by(|(a, _), (b, _)| match (a, b) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    });
+
+    decorated.into_iter().map(|(_, entry)| entry).collect()
 }
 
 // Stack item: pre-sorted entries (when sort_by or group_dir is set) or a live
@@ -83,8 +129,8 @@ impl DirStream {
 #[derive(Debug)]
 pub struct AsyncWalkDir {
     root: PathBuf,
-    opts: WalkDirOptions<Async>,
-    sort_by_metadata: Option<MetadataSorter>,
+    opts: WalkDirOptions,
+    sort_by: Option<Sorter>,
 }
 
 impl AsyncWalkDir {
@@ -93,7 +139,7 @@ impl AsyncWalkDir {
         Self {
             root: root.as_ref().to_path_buf(),
             opts: WalkDirOptions::default(),
-            sort_by_metadata: None,
+            sort_by: None,
         }
     }
 
@@ -122,43 +168,42 @@ impl AsyncWalkDir {
     }
 
     /// Controls whether hidden entries are skipped.
+    ///
+    /// Applies only to entries discovered during recursion; a hidden
+    /// directory is excluded from the walk entirely, not merely from the
+    /// output, so its subtree is never read. The root passed to
+    /// [`new`](Self::new) is exempt and is always yielded and descended into
+    /// regardless of its own hidden status, since walking it was explicit.
     pub fn skip_hidden(mut self, yes: bool) -> Self {
         self.opts.skip_hidden = yes;
         self
     }
 
-    /// Sets the comparison function used to sort entries within each directory.
+    /// Sets the key used to order the entries within each directory.
     ///
-    /// The comparison is synchronous, so it can only read what a [`DirEntry`]
-    /// offers without I/O: path, file name, file type, depth. Ordering by
-    /// metadata belongs to [`Self::sort_by_metadata`] — a comparator cannot await
-    /// [`DirEntry::metadata`], and blocking on it from inside a comparator panics
-    /// on a Tokio runtime.
+    /// The key is computed asynchronously, so it may await
+    /// [`metadata`](DirEntry::metadata) — the one property of an entry that is
+    /// not reachable without I/O. Ordering by size or modification time is
+    /// therefore expressed here rather than through a comparator: a synchronous
+    /// comparator cannot await, and blocking inside one panics with "Cannot start
+    /// a runtime from within a runtime" on any Tokio runtime, which is a `500` if
+    /// the walk happens inside a request handler.
     ///
-    /// Mutually exclusive with [`Self::sort_by_metadata`]: the last call wins.
-    pub fn sort_by<F>(mut self, cmp: F) -> Self
-    where
-        F: FnMut(&DirEntry<Async>, &DirEntry<Async>) -> Ordering + Send + 'static,
-    {
-        self.opts.sort_by = Some(crate::iter::Sorter(Box::new(cmp)));
-        self.sort_by_metadata = None;
-        self
-    }
-
-    /// Sorts the entries within each directory by a key taken from their
-    /// metadata.
+    /// The walker awaits the key of every entry exactly once, before ordering, so
+    /// an ordering by size costs one `stat` per entry rather than one per
+    /// comparison. Keys that await nothing cost nothing beyond the key itself.
     ///
-    /// The walker fetches each entry's metadata once, before ordering, so the key
-    /// function itself does no I/O and an ordering by size or timestamp costs one
-    /// `stat` per entry — not one per comparison, which is what a comparator over
-    /// [`DirEntry::metadata`] would cost even if it could await.
+    /// The entry arrives as an [`Arc`] so the key may hold it across an `await`;
+    /// metadata resolved inside the key stays cached on the entry the walk yields.
+    /// Compound orderings are tuple keys, and descending order is
+    /// [`Reverse`](std::cmp::Reverse). Entries that failed outright are placed
+    /// ahead of the rest without a key being computed for them, and
+    /// [`group_dir`](Self::group_dir) is applied afterwards, so it still wins over
+    /// the key. Calling this more than once keeps the last key.
     ///
-    /// Entries whose metadata could not be read keep their place ahead of the
-    /// readable ones, next to the entries that failed outright, as with
-    /// [`Self::sort_by`]. [`Self::group_dir`] still applies afterwards, and
-    /// descending order is expressed by the key, e.g. [`std::cmp::Reverse`].
-    ///
-    /// Mutually exclusive with [`Self::sort_by`]: the last call wins.
+    /// The synchronous counterpart takes a comparator rather than a key, since
+    /// [`DirEntry::metadata`](crate::DirEntry::metadata) is directly readable
+    /// there; see [`WalkDir::sort_by`](crate::WalkDir::sort_by).
     ///
     /// # Example
     ///
@@ -166,9 +211,12 @@ impl AsyncWalkDir {
     /// # async fn run() -> walkthrough::Result<()> {
     /// use walkthrough::AsyncWalkDir;
     ///
-    /// // Smallest file first, within every directory.
+    /// // Directories first, then smallest file first, ties broken by name.
     /// let mut walker = AsyncWalkDir::new("src")
-    ///     .sort_by_metadata(|meta| meta.len())
+    ///     .sort_by(|entry| async move {
+    ///         let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+    ///         (!entry.is_dir(), size, entry.file_name().to_owned())
+    ///     })
     ///     .walker()
     ///     .await;
     ///
@@ -178,13 +226,16 @@ impl AsyncWalkDir {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sort_by_metadata<K, F>(mut self, key: F) -> Self
+    pub fn sort_by<K, Fut, F>(mut self, key: F) -> Self
     where
-        F: Fn(&std::fs::Metadata) -> K + Send + 'static,
-        K: Ord,
+        F: Fn(Arc<DirEntry<Async>>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = K> + Send + 'static,
+        K: Ord + Send + 'static,
     {
-        self.sort_by_metadata = Some(MetadataSorter(Box::new(move |a, b| key(a).cmp(&key(b)))));
-        self.opts.sort_by = None;
+        let key = Arc::new(key);
+        self.sort_by = Some(Sorter(Box::new(move |entries| {
+            Box::pin(sort_by_key(Arc::clone(&key), entries))
+        })));
         self
     }
 
@@ -196,7 +247,7 @@ impl AsyncWalkDir {
             stack: vec![],
             ancestors: vec![],
             opts: self.opts,
-            sort_by_metadata: self.sort_by_metadata,
+            sort_by: self.sort_by,
         }
     }
 }
@@ -204,8 +255,8 @@ impl AsyncWalkDir {
 /// Async stateful walker produced by [`AsyncWalkDir::walker`].
 #[derive(Debug)]
 pub struct AsyncWalker {
-    opts: WalkDirOptions<Async>,
-    sort_by_metadata: Option<MetadataSorter>,
+    opts: WalkDirOptions,
+    sort_by: Option<Sorter>,
     ancestors: Vec<crate::Ancestor>,
     stack: Vec<DirStream>,
     start: Option<Result<DirEntry<Async>>>,
@@ -227,7 +278,7 @@ impl AsyncWalker {
         let child_depth = depth + 1;
         let follow_links = self.opts.follow_links;
 
-        if self.opts.sort_by.is_some() || self.sort_by_metadata.is_some() || self.opts.group_dir {
+        if self.sort_by.is_some() || self.opts.group_dir {
             let entries = self.collect_sorted(&path, child_depth).await?;
             self.stack.push(DirStream::Sorted(entries.into_iter()));
         } else {
@@ -245,7 +296,7 @@ impl AsyncWalker {
     }
 
     async fn collect_sorted(
-        &mut self,
+        &self,
         path: &std::path::Path,
         depth: usize,
     ) -> Result<Vec<Result<DirEntry<Async>>>> {
@@ -266,31 +317,8 @@ impl AsyncWalker {
             }
         }
 
-        if let Some(ref sorter) = self.sort_by_metadata {
-            // Decorate, sort, undecorate: the metadata is fetched once per entry
-            // instead of once per comparison.
-            let mut decorated = Vec::with_capacity(entries.len());
-            for entry in entries.drain(..) {
-                let meta = match &entry {
-                    Ok(entry) => entry.metadata().await.ok(),
-                    Err(_) => None,
-                };
-                decorated.push((meta, entry));
-            }
-            decorated.sort_by(|(a, _), (b, _)| match (a, b) {
-                (Some(a), Some(b)) => sorter.cmp(a, b),
-                (None, Some(_)) => Ordering::Less,
-                (Some(_), None) => Ordering::Greater,
-                (None, None) => Ordering::Equal,
-            });
-            entries.extend(decorated.into_iter().map(|(_, entry)| entry));
-        } else if let Some(ref mut sorter) = self.opts.sort_by {
-            entries.sort_by(|a, b| match (a, b) {
-                (Ok(a), Ok(b)) => sorter.cmp(a, b),
-                (Err(_), Ok(_)) => Ordering::Less,
-                (Ok(_), Err(_)) => Ordering::Greater,
-                (Err(_), Err(_)) => Ordering::Equal,
-            });
+        if let Some(ref sorter) = self.sort_by {
+            entries = sorter.sort(entries).await;
         }
 
         if self.opts.group_dir {

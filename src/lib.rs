@@ -12,8 +12,9 @@
 //! * Filtering hidden files.
 //! * Setting minimum and maximum recursion depth.
 //! * Following or ignoring symbolic links.
-//! * Sorting entries within a directory — by anything a `DirEntry` carries, or
-//!   by a key from its metadata.
+//! * Sorting entries within a directory — by a comparator over the entry when
+//!   walking synchronously, or by an asynchronously computed key when walking
+//!   asynchronously, where metadata is only reachable through an `await`.
 //! * Detecting symbolic link loops to prevent infinite recursion.
 //!
 //! ## Example

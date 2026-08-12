@@ -4,7 +4,7 @@
 use std::os::unix::fs as unix_fs;
 #[cfg(windows)]
 use std::os::windows::fs as win_fs;
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 use tempfile::TempDir;
 use walkthrough::{Async, AsyncWalkDir, AsyncWalker, DirEntry, ErrorKind, Result};
@@ -245,6 +245,31 @@ async fn test_async_skip_hidden_excludes_dot_entries() {
     assert!(paths.contains("dir1a"));
 }
 
+#[tokio::test]
+async fn test_async_skip_hidden_root_is_exempt() {
+    let tmp = TempDir::new().unwrap();
+    let hidden_root = tmp.path().join(".hidden_root");
+    fs::create_dir(&hidden_root).unwrap();
+    set_hidden(&hidden_root);
+    fs::write(hidden_root.join("file.txt"), "").unwrap();
+
+    let entries = walk_ok(AsyncWalkDir::new(&hidden_root).skip_hidden(true)).await;
+
+    // The root itself is hidden but still yielded and descended into, since
+    // walking it was explicit — skip_hidden only filters what's discovered
+    // during recursion.
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.depth() == 0 && e.path() == hidden_root)
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.depth() == 1 && e.file_name().to_string_lossy() == "file.txt")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Sorting — exercises DirStream::Sorted via collect_sorted
 // ---------------------------------------------------------------------------
@@ -254,7 +279,7 @@ async fn test_async_sort_by_name_orders_siblings_alphabetically() {
     let tmp = basic_tree();
     // sort_by forces DirStream::Sorted for every directory level.
     let depth1: Vec<String> =
-        walk_ok(AsyncWalkDir::new(tmp.path()).sort_by(|a, b| a.file_name().cmp(b.file_name())))
+        walk_ok(AsyncWalkDir::new(tmp.path()).sort_by(|e| async move { e.file_name().to_owned() }))
             .await
             .into_iter()
             .filter(|e| e.depth() == 1)
@@ -306,6 +331,12 @@ fn sized_tree() -> TempDir {
     tmp
 }
 
+/// A key that awaits — an `async fn` item rather than a closure, since either is
+/// accepted. Unreadable metadata sorts as `0` rather than failing the walk.
+async fn size_key(entry: Arc<DirEntry<Async>>) -> u64 {
+    entry.metadata().await.map(|m| m.len()).unwrap_or(0)
+}
+
 async fn file_names_at_depth1(walk: AsyncWalkDir) -> Vec<String> {
     walk_ok(walk)
         .await
@@ -315,39 +346,74 @@ async fn file_names_at_depth1(walk: AsyncWalkDir) -> Vec<String> {
         .collect()
 }
 
-/// The regression this exists for: an ordering by size is expressible at all. A
-/// synchronous comparator cannot await `metadata`, and blocking on it panics —
-/// on a multi-threaded runtime with "Cannot start a runtime from within a
-/// runtime".
+/// The regression these two exist for: an ordering by size is expressible at all.
+/// A synchronous comparator cannot await `metadata`, and blocking on it from
+/// inside one panics with "Cannot start a runtime from within a runtime" — on
+/// either runtime flavour, which surfaces as a `500` when the walk runs inside a
+/// request handler.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_async_sort_by_metadata_orders_by_size_on_a_multi_thread_runtime() {
+async fn test_async_sort_by_size_on_a_multi_thread_runtime() {
     let tmp = sized_tree();
 
-    let names =
-        file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by_metadata(|m| m.len())).await;
+    let names = file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by(size_key)).await;
 
     assert_eq!(names, vec!["small", "big"]);
 }
 
-/// The current-thread runtime is the other half of the regression: there a
-/// blocking comparator deadlocks rather than panicking.
+/// The same key on a current-thread runtime — the flavour actix-web and friends
+/// drive request handlers on.
 #[tokio::test(flavor = "current_thread")]
-async fn test_async_sort_by_metadata_orders_by_size_on_a_current_thread_runtime() {
+async fn test_async_sort_by_size_on_a_current_thread_runtime() {
     let tmp = sized_tree();
 
-    let names =
-        file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by_metadata(|m| m.len())).await;
+    let names = file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by(size_key)).await;
 
     assert_eq!(names, vec!["small", "big"]);
 }
 
-/// The ordering is per directory, as with `sort_by` — not one global ordering
-/// across the walk. `sub/` is followed by its own entries, smallest first.
+/// A configured key must not cost the walk its `Send`ness: `tokio::spawn` requires
+/// it, which is what the `Send` bounds on the key and its future are there for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_walk_with_sort_by_is_spawnable() {
+    let tmp = sized_tree();
+    let root = tmp.path().to_path_buf();
+
+    let names = tokio::spawn(async move {
+        file_names_at_depth1(AsyncWalkDir::new(root).sort_by(size_key)).await
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(names, vec!["small", "big"]);
+}
+
+/// The shape a request handler has: a current-thread runtime driving a `!Send`
+/// task. This is where blocking on `metadata` inside a comparator used to panic.
+#[tokio::test(flavor = "current_thread")]
+async fn test_async_walk_with_sort_by_runs_in_a_local_task() {
+    let tmp = sized_tree();
+    let root = tmp.path().to_path_buf();
+
+    let names = tokio::task::LocalSet::new()
+        .run_until(async move {
+            tokio::task::spawn_local(async move {
+                file_names_at_depth1(AsyncWalkDir::new(root).sort_by(size_key)).await
+            })
+            .await
+            .unwrap()
+        })
+        .await;
+
+    assert_eq!(names, vec!["small", "big"]);
+}
+
+/// The ordering is per directory — not one global ordering across the walk.
+/// `sub/` is followed by its own entries, smallest first.
 #[tokio::test]
-async fn test_async_sort_by_metadata_orders_within_each_directory() {
+async fn test_async_sort_by_orders_within_each_directory() {
     let tmp = sized_tree();
 
-    let names: Vec<String> = walk_ok(AsyncWalkDir::new(tmp.path()).sort_by_metadata(|m| m.len()))
+    let names: Vec<String> = walk_ok(AsyncWalkDir::new(tmp.path()).sort_by(size_key))
         .await
         .into_iter()
         .filter(|e| e.depth() > 0)
@@ -365,26 +431,46 @@ async fn test_async_sort_by_metadata_orders_within_each_directory() {
 
 /// Descending order is the key's business, not a second method.
 #[tokio::test]
-async fn test_async_sort_by_metadata_reverses_with_reverse() {
+async fn test_async_sort_by_reverses_with_reverse() {
     use std::cmp::Reverse;
 
     let tmp = sized_tree();
 
-    let names =
-        file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by_metadata(|m| Reverse(m.len())))
-            .await;
+    let names = file_names_at_depth1(
+        AsyncWalkDir::new(tmp.path()).sort_by(|e| async move { Reverse(size_key(e).await) }),
+    )
+    .await;
 
     assert_eq!(names, vec!["big", "small"]);
 }
 
-/// `group_dir` still wins over the key, exactly as it does over `sort_by`.
+/// A tuple key mixes an awaited property with a synchronous one — the ordering a
+/// metadata-only key could not express. Both files are 1 byte, so the name breaks
+/// the tie; `zzz` is 3 bytes and sorts last despite its name.
 #[tokio::test]
-async fn test_async_sort_by_metadata_composes_with_group_dir() {
+async fn test_async_sort_by_compound_key_breaks_size_ties_by_name() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("zzz"), "aaa").unwrap();
+    fs::write(tmp.path().join("beta"), "a").unwrap();
+    fs::write(tmp.path().join("alpha"), "a").unwrap();
+
+    let names =
+        file_names_at_depth1(AsyncWalkDir::new(tmp.path()).sort_by(|e| async move {
+            (size_key(Arc::clone(&e)).await, e.file_name().to_owned())
+        }))
+        .await;
+
+    assert_eq!(names, vec!["alpha", "beta", "zzz"]);
+}
+
+/// `group_dir` is applied after the key and still wins over it.
+#[tokio::test]
+async fn test_async_sort_by_composes_with_group_dir() {
     let tmp = sized_tree();
 
     let depth1 = walk_ok(
         AsyncWalkDir::new(tmp.path())
-            .sort_by_metadata(|m| m.len())
+            .sort_by(size_key)
             .group_dir(true),
     )
     .await
@@ -401,34 +487,47 @@ async fn test_async_sort_by_metadata_composes_with_group_dir() {
     assert_eq!(files, vec!["small", "big"], "the key orders the files");
 }
 
-/// The two orderings are mutually exclusive; whichever was configured last runs.
+/// The `Arc` the key receives is the entry the walk goes on to yield, so metadata
+/// the key resolved is still cached on it afterwards. Observable by deleting the
+/// file first: an uncached read would have to `stat` it again and fail.
 #[tokio::test]
-async fn test_async_last_ordering_call_wins() {
+async fn test_async_sort_by_leaves_metadata_cached_on_the_entry() {
+    let tmp = sized_tree();
+    let entry = walk_ok(AsyncWalkDir::new(tmp.path()).min_depth(1).sort_by(size_key))
+        .await
+        .into_iter()
+        .find(|e| !e.is_dir())
+        .unwrap();
+
+    fs::remove_file(entry.path()).unwrap();
+
+    assert!(
+        entry.metadata().await.is_ok(),
+        "the key resolved this entry's metadata, so it must still be cached"
+    );
+}
+
+/// A second `sort_by` replaces the first, including when the two keys are of
+/// different types — the key type is erased, so only the last one survives.
+#[tokio::test]
+async fn test_async_last_sort_by_call_wins() {
     let tmp = sized_tree();
 
     let by_name = file_names_at_depth1(
         AsyncWalkDir::new(tmp.path())
-            .sort_by_metadata(|m| m.len())
-            .sort_by(|a, b| a.file_name().cmp(b.file_name())),
+            .sort_by(size_key)
+            .sort_by(|e| async move { e.file_name().to_owned() }),
     )
     .await;
     let by_size = file_names_at_depth1(
         AsyncWalkDir::new(tmp.path())
-            .sort_by(|a, b| a.file_name().cmp(b.file_name()))
-            .sort_by_metadata(|m| m.len()),
+            .sort_by(|e| async move { e.file_name().to_owned() })
+            .sort_by(size_key),
     )
     .await;
 
-    assert_eq!(
-        by_name,
-        vec!["big", "small"],
-        "name ordering configured last"
-    );
-    assert_eq!(
-        by_size,
-        vec!["small", "big"],
-        "key ordering configured last"
-    );
+    assert_eq!(by_name, vec!["big", "small"], "name key configured last");
+    assert_eq!(by_size, vec!["small", "big"], "size key configured last");
 }
 
 // ---------------------------------------------------------------------------
@@ -444,7 +543,7 @@ async fn test_async_full_set_reached_with_sort_and_group() {
     let paths = rel_paths(
         tmp.path(),
         AsyncWalkDir::new(tmp.path())
-            .sort_by(|a, b| a.file_name().cmp(b.file_name()))
+            .sort_by(|e| async move { e.file_name().to_owned() })
             .group_dir(true),
     )
     .await;
@@ -677,7 +776,7 @@ async fn test_async_metadata_error_after_file_removed() {
 
 #[tokio::test]
 async fn test_async_walkdir_debug_with_sort_by_contains_sorter() {
-    let walker = AsyncWalkDir::new(".").sort_by(|a, b| a.file_name().cmp(b.file_name()));
+    let walker = AsyncWalkDir::new(".").sort_by(|e| async move { e.file_name().to_owned() });
     assert!(format!("{walker:?}").contains("Sorter"));
 }
 

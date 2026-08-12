@@ -6,23 +6,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- `AsyncWalkDir::sort_by_metadata` — orders the entries within each directory by a
-  key taken from their metadata, e.g. `.sort_by_metadata(|meta| meta.len())`. The
-  walker fetches each entry's metadata once before ordering, so the key function
-  does no I/O.
+- **Breaking:** `AsyncWalkDir::sort_by` now takes a key function computed
+  asynchronously, `Fn(Arc<AsyncDirEntry>) -> impl Future<Output: Ord>`, instead of a
+  synchronous comparator:
 
-  This closes a hole in the async builder: `sort_by` takes a synchronous
-  comparator, while metadata is only reachable through `async fn metadata()`, so an
-  ordering by size or timestamp could not be expressed at all. Callers were pushed
-  into blocking inside the comparator, which panics with "Cannot start a runtime
-  from within a runtime" on a multi-threaded runtime and deadlocks on a
-  current-thread one. It is also cheaper than a comparator would be: one `stat` per
-  entry instead of one per comparison.
+  ```rust
+  // before — could not order by anything that needs I/O
+  .sort_by(|a, b| a.file_name().cmp(b.file_name()))
+  // after
+  .sort_by(|entry| async move { entry.file_name().to_owned() })
+  ```
 
-  `sort_by` and `sort_by_metadata` are mutually exclusive — the last builder call
-  wins — and `group_dir` still applies after either.
+  This closes a hole in the async builder: metadata is only reachable through
+  `async fn metadata()`, so an ordering by size or timestamp could not be expressed
+  at all. Callers were pushed into blocking inside the comparator, which panics with
+  "Cannot start a runtime from within a runtime" on either runtime flavour — a `500`
+  when the walk runs inside a request handler.
+
+  The key is awaited once per entry, before ordering, so an ordering by size costs
+  one `stat` per entry rather than one per comparison, and a key that awaits nothing
+  costs nothing. Compound orderings that mix awaited and synchronous properties are
+  tuple keys; descending order is `std::cmp::Reverse`. The entry is handed to the key
+  as an `Arc` so it can be held across an `await`, and metadata the key resolves
+  stays cached on the entry the walk yields. Entries that failed outright are placed
+  ahead of the rest without a key being computed for them, `group_dir` is still
+  applied afterwards, and a second `sort_by` call replaces the first.
+
+  `WalkDir::sort_by` is unchanged: a synchronous comparator is the right shape there,
+  since `DirEntry::metadata` is directly readable and cached.
+
+### Fixed
+
+- `DirEntry` is now `Clone` in practice. The derived implementation demanded
+  `T: Clone` of the state marker, which neither `Sync` nor `Async` implements, so it
+  applied to no entry at all.
 
 ## [0.2.0] - 2026-05-07
 
