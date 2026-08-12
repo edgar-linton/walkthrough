@@ -1,6 +1,6 @@
 name: Setup Rust
 description: >
-  Install the pinned Rust toolchain (see rust-toolchain.toml), populate the
+  Install the Rust toolchain pinned in rust-toolchain.toml, populate the
   build cache, and install just. Must be called after actions/checkout
   because it is a local action.
 
@@ -13,19 +13,16 @@ inputs:
 runs:
   using: composite
   steps:
-    # dtolnay/rust-toolchain has no rust-toolchain.toml awareness of its own —
-    # `toolchain` is a required input on every ref of that action, including
-    # @master. Reading the channel here instead of hardcoding it in the
-    # workflow keeps rust-toolchain.toml the single place this project's
-    # toolchain version is declared.
-    - id: toolchain
+    # GitHub-hosted runners ship rustup preinstalled, and rustup resolves
+    # rust-toolchain.toml through its directory override the moment any
+    # proxied command runs here, installing the pinned toolchain on demand —
+    # no separate toolchain-install action needed. `rustc -V` is that first
+    # call, so the toolchain is guaranteed installed before rust-cache and
+    # any `rustup component add` below need it.
+    - shell: bash
+      run: rustc -V
+    - if: inputs.components != ''
       shell: bash
-      run: |
-        channel=$(grep -m1 '^channel' rust-toolchain.toml | cut -d '"' -f2)
-        echo "channel=$channel" >> "$GITHUB_OUTPUT"
-    - uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: ${{ steps.toolchain.outputs.channel }}
-        components: ${{ inputs.components }}
+      run: rustup component add $(echo '${{ inputs.components }}' | tr ',' ' ')
     - uses: Swatinem/rust-cache@v2
     - uses: extractions/setup-just@v2
