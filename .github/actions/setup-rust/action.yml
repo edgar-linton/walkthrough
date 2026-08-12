@@ -13,8 +13,19 @@ inputs:
 runs:
   using: composite
   steps:
+    # dtolnay/rust-toolchain has no rust-toolchain.toml awareness of its own —
+    # `toolchain` is a required input on every ref of that action, including
+    # @master. Reading the channel here instead of hardcoding it in the
+    # workflow keeps rust-toolchain.toml the single place this project's
+    # toolchain version is declared.
+    - id: toolchain
+      shell: bash
+      run: |
+        channel=$(grep -m1 '^channel' rust-toolchain.toml | cut -d '"' -f2)
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
     - uses: dtolnay/rust-toolchain@master
       with:
+        toolchain: ${{ steps.toolchain.outputs.channel }}
         components: ${{ inputs.components }}
     - uses: Swatinem/rust-cache@v2
     - uses: extractions/setup-just@v2
