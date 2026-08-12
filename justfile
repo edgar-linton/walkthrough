@@ -48,28 +48,23 @@ pre-commit: fmt clippy test
 @cov:
     cargo llvm-cov --all-features --workspace --open
 
-# ── CI ────────────────────────────────────────────────────────────────────────
+# ── Release ───────────────────────────────────────────────────────────────────
+#
+# CI runs its own checks directly (see .github/workflows/) rather than through
+# just, so there's one place — the workflow file — that defines what actually
+# gates a merge or a publish. These recipes are for a human cutting a release:
+# bump Cargo.toml and CHANGELOG.md by hand, commit, then `just tag`.
 
-# Verify formatting without modifying files
-[group('ci')]
-@ci-fmt:
-    cargo fmt --all -- --check
+# Dry-run cargo publish without uploading anything
+[group('release')]
+@publish-dry-run:
+    cargo publish --all-features --dry-run
 
-# Lint, treating warnings as errors
-[group('ci')]
-@ci-clippy:
-    cargo clippy --all-targets --all-features -- -D warnings
-
-# Build documentation
-[group('ci')]
-@ci-doc:
-    cargo doc --no-deps --document-private-items
-
-# Generate LCOV coverage report for upload
-[group('ci')]
-@ci-coverage:
-    cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
-
-# Full CI suite (mirrors GitHub Actions)
-[group('ci')]
-ci: ci-fmt ci-clippy ci-doc test
+# Tag Cargo.toml's current version and push the tag, triggering the publish workflow
+[group('release')]
+@tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+    git tag -a "v$version" -m "v$version"
+    git push origin "v$version"

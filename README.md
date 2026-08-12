@@ -115,14 +115,24 @@ The project pins a nightly Rust toolchain via `rust-toolchain.toml` (needed for
 `rustfmt`'s doc-comment, string, and import-grouping options in `rustfmt.toml`);
 `rustup` fetches it automatically on first use.
 
-[`just`](https://github.com/casey/just) is used to run common tasks:
+[`just`](https://github.com/casey/just) is used to run common local dev tasks;
+CI runs its own checks directly rather than through `just` (see
+`.github/workflows/`):
 
 ```
-just fmt              # check formatting
+just fmt              # format code in place
 just clippy           # run linter
 just test             # run all tests
-just ci               # full CI suite
+just pre-commit       # format, lint, and test — run before committing
 ```
+
+`just pre-commit` also runs automatically as a git pre-commit hook, installed by
+`cargo-husky` the first time you run `cargo test` after cloning — no separate setup
+step required.
+
+To cut a release: bump the version in `Cargo.toml`, add a dated entry to
+`CHANGELOG.md`, commit, then `just tag` to tag and push — the publish workflow
+verifies the tag, re-runs CI, and publishes to crates.io.
 
 ## License
 

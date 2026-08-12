@@ -1,0 +1,45 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: rustfmt, clippy
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "${{ github.ref_name }}" ]; then
+            echo "Tag ${{ github.ref_name }} does not match Cargo.toml version v$version" >&2
+            exit 1
+          fi
+
+      - name: Check CHANGELOG has an entry for the current version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "Cargo.toml is at $version but CHANGELOG.md has no '## [$version]' entry" >&2
+            exit 1
+          fi
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo doc --no-deps --document-private-items
+      - run: cargo test --lib --bins
+      - run: cargo test --doc
+      - run: cargo test --tests
+
+      - run: cargo publish --all-features
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
