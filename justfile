@@ -72,4 +72,31 @@ pre-commit: fmt clippy test
 
 # Full CI suite (mirrors GitHub Actions)
 [group('ci')]
-ci: ci-fmt ci-clippy ci-doc test
+ci: ci-fmt ci-clippy ci-doc check-changelog test
+
+# ── Release ───────────────────────────────────────────────────────────────────
+
+# Verify Cargo.toml's version has a dated CHANGELOG.md entry, not just Unreleased
+[group('release')]
+check-changelog:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+    if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+        echo "Cargo.toml is at $version but CHANGELOG.md has no '## [$version]' entry" >&2
+        exit 1
+    fi
+
+# Dry-run cargo publish without uploading anything
+[group('release')]
+@publish-dry-run:
+    cargo publish --all-features --dry-run
+
+# Tag Cargo.toml's current version and push the tag, triggering the publish workflow
+[group('release')]
+tag: check-changelog
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+    git tag -a "v$version" -m "v$version"
+    git push origin "v$version"
