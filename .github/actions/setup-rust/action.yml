@@ -1,18 +1,19 @@
 name: Setup Rust
 description: >
-  Install the stable Rust toolchain, populate the build cache, and install
-  just. Must be called after actions/checkout because it is a local action.
+  Install the pinned Rust toolchain (see rust-toolchain.toml), populate the
+  build cache, and install just. Must be called after actions/checkout
+  because it is a local action.
 
 inputs:
   components:
-    description: Additional rustup components (e.g. 'rustfmt, clippy' or 'llvm-tools-preview')
+    description: Additional rustup components beyond rust-toolchain.toml (e.g. 'llvm-tools-preview')
     required: false
     default: ''
 
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: dtolnay/rust-toolchain@master
       with:
         components: ${{ inputs.components }}
     - uses: Swatinem/rust-cache@v2

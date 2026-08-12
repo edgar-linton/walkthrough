@@ -111,6 +111,10 @@ Symlink loop detection compares device/inode identifiers (or equivalent) of ever
 
 ## Development
 
+The project pins a nightly Rust toolchain via `rust-toolchain.toml` (needed for
+`rustfmt`'s doc-comment, string, and import-grouping options in `rustfmt.toml`);
+`rustup` fetches it automatically on first use.
+
 [`just`](https://github.com/casey/just) is used to run common tasks:
 
 ```
