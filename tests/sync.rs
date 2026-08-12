@@ -246,6 +246,35 @@ fn test_skip_hidden_excludes_dot_entries() {
     assert!(paths.contains("dir1a"));
 }
 
+#[test]
+fn test_skip_hidden_root_is_exempt() {
+    let tmp = TempDir::new().unwrap();
+    let hidden_root = tmp.path().join(".hidden_root");
+    fs::create_dir(&hidden_root).unwrap();
+    set_hidden(&hidden_root);
+    fs::write(hidden_root.join("file.txt"), "").unwrap();
+
+    let entries: Vec<_> = WalkDir::new(&hidden_root)
+        .skip_hidden(true)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // The root itself is hidden but still yielded and descended into, since
+    // walking it was explicit — skip_hidden only filters what's discovered
+    // during recursion.
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.depth() == 0 && e.path() == hidden_root)
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.depth() == 1 && e.file_name().to_string_lossy() == "file.txt")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Sorting
 // ---------------------------------------------------------------------------
