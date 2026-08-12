@@ -1,19 +1,28 @@
 name: Setup Rust
 description: >
-  Install the stable Rust toolchain, populate the build cache, and install
-  just. Must be called after actions/checkout because it is a local action.
+  Install the Rust toolchain pinned in rust-toolchain.toml, populate the
+  build cache, and install just. Must be called after actions/checkout
+  because it is a local action.
 
 inputs:
   components:
-    description: Additional rustup components (e.g. 'rustfmt, clippy' or 'llvm-tools-preview')
+    description: Additional rustup components beyond rust-toolchain.toml (e.g. 'llvm-tools-preview')
     required: false
     default: ''
 
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@stable
-      with:
-        components: ${{ inputs.components }}
+    # GitHub-hosted runners ship rustup preinstalled, and rustup resolves
+    # rust-toolchain.toml through its directory override the moment any
+    # proxied command runs here, installing the pinned toolchain on demand —
+    # no separate toolchain-install action needed. `rustc -V` is that first
+    # call, so the toolchain is guaranteed installed before rust-cache and
+    # any `rustup component add` below need it.
+    - shell: bash
+      run: rustc -V
+    - if: inputs.components != ''
+      shell: bash
+      run: rustup component add $(echo '${{ inputs.components }}' | tr ',' ' ')
     - uses: Swatinem/rust-cache@v2
     - uses: extractions/setup-just@v2
