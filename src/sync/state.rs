@@ -1,6 +1,9 @@
 use std::{cmp::Ordering, fmt, fs, path::PathBuf, vec};
 
-use crate::{Ancestor, DirEntry, Error, Result, WalkDir, iter::WalkDirOptions};
+use crate::{
+    Ancestor, DirEntry, Error, Result, WalkDir,
+    iter::{Sorter, WalkDirOptions},
+};
 
 /// Synchronous state.
 #[derive(Debug)]
@@ -56,7 +59,8 @@ impl fmt::Debug for DirStream {
 /// Stateful iterator produced by [`WalkDir`].
 #[derive(Debug)]
 pub struct Walker {
-    opts: WalkDirOptions<Sync>,
+    opts: WalkDirOptions,
+    sort_by: Option<Sorter>,
     ancestors: Vec<Ancestor>,
     stack: Vec<DirStream>,
     start: Option<Result<DirEntry<Sync>>>,
@@ -73,6 +77,7 @@ impl IntoIterator for WalkDir {
             stack: vec![],
             ancestors: vec![],
             opts: self.opts,
+            sort_by: self.sort_by,
         }
     }
 }
@@ -95,7 +100,7 @@ impl Walker {
         let child_depth = depth + 1;
         let follow_links = self.opts.follow_links;
 
-        if self.opts.sort_by.is_some() || self.opts.group_dir {
+        if self.sort_by.is_some() || self.opts.group_dir {
             let entries = self.collect_sorted(&path, child_depth)?;
             self.stack.push(DirStream::Sorted(entries.into_iter()));
         } else {
@@ -128,9 +133,10 @@ impl Walker {
             })
             .collect();
 
-        if let Some(ref mut sorter) = self.opts.sort_by {
+        if let Some(ref mut sorter) = self.sort_by {
             entries.sort_by(|a, b| match (a, b) {
                 (Ok(a), Ok(b)) => sorter.cmp(a, b),
+                // Entries that failed outright keep their place ahead of the rest.
                 (Err(_), Ok(_)) => Ordering::Less,
                 (Ok(_), Err(_)) => Ordering::Greater,
                 (Err(_), Err(_)) => Ordering::Equal,

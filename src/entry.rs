@@ -8,7 +8,7 @@ use std::{
 use crate::Sync;
 
 /// Directory entry.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DirEntry<T = Sync> {
     pub(super) path: PathBuf,
     pub(super) file_type: fs::FileType,
@@ -21,6 +21,24 @@ pub struct DirEntry<T = Sync> {
     #[cfg(windows)]
     pub(super) metadata: fs::Metadata,
     pub(super) state: PhantomData<T>,
+}
+
+// Written out rather than derived: the state is a `PhantomData` marker, so a
+// clone never depends on it, but a derived impl would demand `T: Clone` and
+// therefore apply to neither state.
+impl<T> Clone for DirEntry<T> {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            file_type: self.file_type,
+            follow_link: self.follow_link,
+            depth: self.depth,
+            #[cfg(unix)]
+            ino: self.ino,
+            metadata: self.metadata.clone(),
+            state: PhantomData,
+        }
+    }
 }
 
 impl<T> DirEntry<T> {

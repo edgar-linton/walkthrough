@@ -61,9 +61,15 @@ Both `WalkDir` and `AsyncWalkDir` expose the same builder methods:
 | `follow_links(bool)` | `false`   | Follow symbolic links                            |
 | `skip_hidden(bool)`  | `false`   | Omit dot-files and dot-directories               |
 | `group_dir(bool)`    | `false`   | Yield directories before files at each level     |
-| `sort_by(fn)`        | none      | Custom comparator for entries within each directory |
+| `sort_by(fn)`        | none      | Order the entries within each directory           |
 
-### Sorting example
+`sort_by` is the one method whose argument differs between the two walkers, because
+metadata is reachable synchronously in one and only through an `await` in the other.
+
+### Sorting
+
+`WalkDir::sort_by` takes a comparator. `metadata` is cached on the entry, so reading
+it from there costs one `stat` per entry rather than one per comparison:
 
 ```rust
 use walkthrough::WalkDir;
@@ -72,6 +78,30 @@ let walker = WalkDir::new(".")
     .group_dir(true)
     .sort_by(|a, b| a.file_name().cmp(b.file_name()));
 ```
+
+`AsyncWalkDir::sort_by` takes a key instead, computed asynchronously and awaited once
+per entry before ordering. A comparator would be the wrong shape there: it cannot
+await `metadata`, and blocking on it from inside one panics with "Cannot start a
+runtime from within a runtime" — a `500` if the walk happens in a request handler.
+Compound orderings are tuple keys, and descending order is `std::cmp::Reverse`:
+
+```rust
+use walkthrough::AsyncWalkDir;
+
+// Directories first, then smallest file first, ties broken by name.
+let walker = AsyncWalkDir::new(".")
+    .sort_by(|entry| async move {
+        let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+        (!entry.is_dir(), size, entry.file_name().to_owned())
+    })
+    .walker()
+    .await;
+```
+
+The entry arrives as an `Arc`, so the key may hold it across an `await` and metadata
+it resolves stays cached on the entry the walk yields. Entries that failed outright
+are placed ahead of the rest without a key being computed for them, and `group_dir`
+is applied after the key, so it still wins over it.
 
 ## How it works
 
