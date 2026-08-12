@@ -27,6 +27,28 @@ use std::{fs, path::Path};
 use tempfile::TempDir;
 use walkthrough::{AsyncDirEntry, AsyncWalkDir};
 
+/// On Windows, mark a path as hidden by setting FILE_ATTRIBUTE_HIDDEN. On
+/// Unix the dot-prefix is sufficient and this is a no-op — mirrors the
+/// helper in tests/sync.rs and tests/async.rs.
+#[cfg(windows)]
+fn set_hidden(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttributesW};
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN);
+    }
+}
+
+#[cfg(unix)]
+fn set_hidden(_path: &Path) {}
+
 /// Plain data carried across an API boundary — no borrow on the walker, no
 /// futures, nothing async left once it's built.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +116,9 @@ fn fixture_tree() -> TempDir {
     fs::create_dir(dir.path().join("sub")).unwrap();
     fs::write(dir.path().join("a.txt"), b"0123456789").unwrap();
     fs::write(dir.path().join("b.log"), b"abc").unwrap();
-    fs::write(dir.path().join(".hidden"), b"x").unwrap();
+    let hidden = dir.path().join(".hidden");
+    fs::write(&hidden, b"x").unwrap();
+    set_hidden(&hidden);
     fs::write(dir.path().join("sub").join("nested.txt"), b"hello").unwrap();
     dir
 }
