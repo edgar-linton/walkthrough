@@ -1,8 +1,8 @@
 name: Setup Rust
 description: >
-  Install the Rust toolchain pinned in rust-toolchain.toml, populate the
-  build cache, and install just. Must be called after actions/checkout
-  because it is a local action.
+  Install the Rust toolchain pinned in rust-toolchain.toml and populate the
+  build cache. Must be called after actions/checkout because it is a local
+  action.
 
 inputs:
   components:
@@ -25,4 +25,3 @@ runs:
       shell: bash
       run: rustup component add $(echo '${{ inputs.components }}' | tr ',' ' ')
     - uses: Swatinem/rust-cache@v2
-    - uses: extractions/setup-just@v2
