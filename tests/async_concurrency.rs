@@ -21,6 +21,27 @@ use std::{
 use tempfile::TempDir;
 use walkthrough::{AsyncDirEntry, AsyncWalkDir};
 
+/// On Windows, mark a path as hidden by setting FILE_ATTRIBUTE_HIDDEN — a dot
+/// prefix means nothing there. On Unix the prefix is sufficient and this is a
+/// no-op; mirrors the helper in tests/async.rs.
+#[cfg(windows)]
+fn set_hidden(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttributesW};
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN);
+    }
+}
+
+#[cfg(unix)]
+fn set_hidden(_path: &Path) {}
+
 /// root/
 /// ├── dir_a/         (holding 12 files of descending size)
 /// ├── dir_b/
@@ -47,7 +68,9 @@ fn wide_tree() -> TempDir {
     for i in 0..10 {
         fs::write(root.join(format!("same_{i}")), b"same").unwrap();
     }
-    fs::write(root.join(".hidden"), b"h").unwrap();
+    let hidden = root.join(".hidden");
+    fs::write(&hidden, b"h").unwrap();
+    set_hidden(&hidden);
     tmp
 }
 
@@ -218,9 +241,10 @@ async fn test_skip_hidden_applies_on_the_concurrent_path() {
 
     while let Some(entry) = walker.next().await {
         let entry = entry.unwrap();
-        assert!(
-            entry.depth() == 0 || !entry.file_name().to_string_lossy().starts_with('.'),
-            "hidden entry {:?} survived",
+        assert_ne!(
+            entry.file_name(),
+            ".hidden",
+            "hidden entry {:?} survived the concurrent resolve",
             entry.path()
         );
     }
