@@ -33,7 +33,7 @@ walkthrough = { version = "0.4", features = ["async"] }
 Then drive the walker manually with `.next().await`:
 
 ```rust
-use walkthrough::AsyncWalkDir;
+use walkthrough::r#async::AsyncWalkDir;
 
 let mut walker = AsyncWalkDir::new("./my_project")
     .min_depth(1)
@@ -63,11 +63,10 @@ Both `WalkDir` and `AsyncWalkDir` expose the same builder methods:
 | `group_dir(bool)`    | `false`   | Yield directories before files at each level     |
 | `sort_by(fn)`        | none      | Order the entries within each directory           |
 
-`sort_by` is the one method whose argument differs between the two walkers, because
-metadata is reachable synchronously in one and only through an `await` in the other.
+`sort_by`'s argument differs between the walkers: a comparator in one, an async key in
+the other.
 
-`AsyncWalkDir` has three more, which the synchronous walker has no use for — it has
-no I/O to overlap, and its iterator composes with `Iterator::skip` and `take`:
+`AsyncWalkDir` has three more:
 
 | Method             | Default   | Description                                            |
 | ------------------ | --------- | ------------------------------------------------------ |
@@ -77,8 +76,8 @@ no I/O to overlap, and its iterator composes with `Iterator::skip` and `take`:
 
 ### Sorting
 
-`WalkDir::sort_by` takes a comparator. `metadata` is cached on the entry, so reading
-it from there costs one `stat` per entry rather than one per comparison:
+`WalkDir::sort_by` takes a comparator; `metadata` is cached, so reading it there costs
+one `stat` per entry, not one per comparison:
 
 ```rust
 use walkthrough::WalkDir;
@@ -88,14 +87,12 @@ let walker = WalkDir::new(".")
     .sort_by(|a, b| a.file_name().cmp(b.file_name()));
 ```
 
-`AsyncWalkDir::sort_by` takes a key instead, computed asynchronously and awaited once
-per entry before ordering. A comparator would be the wrong shape there: it cannot
-await `metadata`, and blocking on it from inside one panics with "Cannot start a
-runtime from within a runtime" — a `500` if the walk happens in a request handler.
-Compound orderings are tuple keys, and descending order is `std::cmp::Reverse`:
+`AsyncWalkDir::sort_by` takes a key, awaited once per entry before ordering, since a
+comparator cannot await `metadata`. Tuple keys give compound orderings,
+`std::cmp::Reverse` descending order:
 
 ```rust
-use walkthrough::AsyncWalkDir;
+use walkthrough::r#async::AsyncWalkDir;
 
 // Directories first, then smallest file first, ties broken by name.
 let walker = AsyncWalkDir::new(".")
@@ -107,30 +104,23 @@ let walker = AsyncWalkDir::new(".")
     .await;
 ```
 
-The entry arrives as an `Arc`, so the key may hold it across an `await` and metadata
-it resolves stays cached on the entry the walk yields.
+The entry arrives as an `Arc`, so the key may hold it across an `await`, and metadata
+it resolves stays cached on the yielded entry.
 
-The resulting order is total, and is, in precedence order: `group_dir` if set, then
-entries that failed outright — for which no key is computed — then the key, then the
-file name. The name tie-break is what makes it reproducible between two walks of the
-same directory, which is what `offset` needs.
+The order is total, in precedence order: `group_dir`, then entries that failed
+outright, then the key, then the file name.
 
 ### Concurrency
 
-Every per-entry resolve is bounded by `concurrency`: the `sort_by` key, the file type
-on a filesystem that does not populate `d_type`, and the hidden flag on Windows.
-Without it those are awaited one entry at a time, so a directory's latency is the sum
-of its entries' rather than the longest of them.
+`concurrency` bounds every per-entry resolve: the `sort_by` key, the file type on a
+filesystem without `d_type`, and the hidden flag on Windows. It never affects order.
 
-The size of the win is the per-entry latency. On a local filesystem, 2200 entries
-ordered by size take 38.7 ms at `concurrency(1)` and 15.2 ms at the default 32, bound
-from there by Tokio's blocking-pool dispatch rather than the syscall. A network mount
-or FUSE layer where one `stat` costs milliseconds is bound by round trips instead, and
-128–512 is reasonable there — 2000 entries at 5 ms each take 10.2 s sequentially and
-175 ms at `concurrency(64)`:
+The win scales with per-entry latency. Locally, 2200 entries ordered by size take
+38.7 ms at `concurrency(1)` and 15.2 ms at the default 32. On a network mount 128–512
+is reasonable: 2000 entries at 5 ms each take 10.2 s sequentially, 175 ms at 64.
 
 ```rust
-use walkthrough::AsyncWalkDir;
+use walkthrough::r#async::AsyncWalkDir;
 
 let walker = AsyncWalkDir::new("/mnt/share")
     .max_depth(1)
@@ -140,21 +130,15 @@ let walker = AsyncWalkDir::new("/mnt/share")
     .await;
 ```
 
-Concurrency never affects the order entries are yielded in — results are placed by
-directory position, not by completion.
-
-`examples/latency_probe.rs` measures all of this against a real directory, which is
-worth doing before tuning: if `names+stat` comes back in milliseconds, the latency is
-not in the filesystem and `concurrency` will not move it.
+`examples/latency_probe.rs` measures a real directory; run it before tuning.
 
 ### Paging
 
 `limit` and `offset` are `skip(offset).take(limit)` over the walk the same builder
-would otherwise produce, so a listing endpoint can expose the same pair as the rest of
-an SQL-backed API:
+would otherwise produce:
 
 ```rust
-use walkthrough::AsyncWalkDir;
+use walkthrough::r#async::AsyncWalkDir;
 
 let walker = AsyncWalkDir::new(root)
     .max_depth(1)
@@ -165,16 +149,11 @@ let walker = AsyncWalkDir::new(root)
     .await;
 ```
 
-They count yielded entries across the whole traversal rather than per directory, so
-they compose with `min_depth` and `skip_hidden` the way `LIMIT` composes with a `WHERE`
-clause. A skipped directory is still descended into, and an offset past the end yields
-nothing rather than an error.
+They count yielded entries across the whole traversal, not per directory. A skipped
+directory is still descended into, and an offset past the end yields nothing.
 
 Set an ordering when paginating: filesystem order is not reproducible across two
-`read_dir` calls of the same directory, so an offset over an unordered walk is not a
-stable position. And note that `limit` bounds what a caller receives, not what the
-filesystem is asked — ordering by a key still requires the key of every candidate, so
-`concurrency` is what makes a page fast.
+`read_dir` calls, so an offset over an unordered walk is not a stable position.
 
 ## How it works
 
@@ -184,28 +163,24 @@ Symlink loop detection compares device/inode identifiers (or equivalent) of ever
 
 ## Development
 
-The project pins a nightly Rust toolchain via `rust-toolchain.toml` (needed for
-`rustfmt`'s doc-comment, string, and import-grouping options in `rustfmt.toml`);
-`rustup` fetches it automatically on first use.
+The toolchain is pinned nightly in `rust-toolchain.toml`, required by the options in
+`rustfmt.toml`; `rustup` fetches it automatically.
 
-[`just`](https://github.com/casey/just) is used to run common local dev tasks;
-CI runs its own checks directly rather than through `just` (see
-`.github/workflows/`):
+Local tasks run through [`just`](https://github.com/casey/just); CI runs its own
+commands directly (see `.github/workflows/`):
 
 ```
 just fmt              # format code in place
 just clippy           # run linter
 just test             # run all tests
-just pre-commit       # format, lint, and test — run before committing
+just doc              # docs as docs.rs renders them
+just pre-commit       # format, lint, and test — also a git pre-commit hook
 ```
 
-`just pre-commit` also runs automatically as a git pre-commit hook, installed by
-`cargo-husky` the first time you run `cargo test` after cloning — no separate setup
-step required.
+The hook is installed by `cargo-husky` on the first `cargo test` after cloning.
 
-To cut a release: bump the version in `Cargo.toml`, add a dated entry to
-`CHANGELOG.md`, commit, then `just tag` to tag and push — the publish workflow
-verifies the tag, re-runs CI, and publishes to crates.io.
+To cut a release: bump `Cargo.toml`, add a dated entry to `CHANGELOG.md`, commit, then
+`just tag`.
 
 ## License
 

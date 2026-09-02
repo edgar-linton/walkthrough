@@ -85,8 +85,8 @@ impl IntoIterator for WalkDir {
 impl Walker {
     fn push_dir(&mut self, entry: &DirEntry<Sync>) -> Result<()> {
         let depth = entry.depth();
-        // Truncating to `depth` evicts ancestors from any previous subtree at
-        // this level — the correct way to handle backtracking without explicit pops.
+        // Truncating evicts a previous subtree's ancestors, so backtracking
+        // needs no explicit pops.
         self.ancestors.truncate(depth);
 
         if let Some(ancestor) = entry.ancestor() {
@@ -136,7 +136,7 @@ impl Walker {
         if let Some(ref mut sorter) = self.sort_by {
             entries.sort_by(|a, b| match (a, b) {
                 (Ok(a), Ok(b)) => sorter.cmp(a, b),
-                // Entries that failed outright keep their place ahead of the rest.
+                // Failed entries keep their place ahead of the rest.
                 (Err(_), Ok(_)) => Ordering::Less,
                 (Ok(_), Err(_)) => Ordering::Greater,
                 (Err(_), Err(_)) => Ordering::Equal,
@@ -159,8 +159,8 @@ impl Iterator for Walker {
     type Item = Result<DirEntry<Sync>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Yield the root entry on the first call, descending into it if it is
-        // a directory and within the depth limit.
+        // First call: yield the root, descending if it is a directory within
+        // the depth limit.
         if let Some(res) = self.start.take() {
             let entry = match res {
                 Err(err) => return Some(Err(err)),

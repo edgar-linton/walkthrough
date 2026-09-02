@@ -7,24 +7,20 @@ use thiserror::Error;
 
 use crate::DirEntry;
 
-/// Distinguishes the cause of a traversal [`Error`].
+/// Distinguishes the cause of a traversal [`struct@Error`].
 #[derive(Debug, Error)]
 pub enum ErrorKind {
-    /// An I/O error occurred while reading a directory entry or its metadata.
+    /// Reading a directory entry or its metadata failed.
     #[error("{0}")]
     Io(#[source] io::Error),
 
-    /// Following a symlink would revisit a directory that is already an
-    /// ancestor in the current traversal path.
+    /// Following a symlink would revisit an ancestor directory.
     #[error("symlink loop detected")]
     LoopDetected,
 }
 
-/// Error produced during directory traversal.
-///
-/// Always carries the filesystem [`path`](Self::path) and traversal
-/// [`depth`](Self::depth) at which the failure occurred, together with a
-/// [`kind`](Self::kind) that distinguishes the underlying cause.
+/// Error produced during directory traversal, carrying the
+/// [`path`](Self::path), [`depth`](Self::depth) and [`kind`](Self::kind).
 #[derive(Debug, Error)]
 #[error("Error on {path} with depth {depth} and kind: {kind}")]
 pub struct Error {
@@ -67,8 +63,7 @@ impl Error {
         matches!(self.kind, ErrorKind::LoopDetected)
     }
 
-    /// Returns a reference to the inner [`io::Error`], or `None` if this is
-    /// not an I/O error.
+    /// Returns the inner [`io::Error`], if this is an I/O error.
     #[inline]
     pub fn io_error(&self) -> Option<&io::Error> {
         match &self.kind {
@@ -77,8 +72,7 @@ impl Error {
         }
     }
 
-    /// Consumes `self` and returns the inner [`io::Error`], or `None` if this
-    /// is not an I/O error.
+    /// Consumes `self` and returns the inner [`io::Error`], if any.
     #[inline]
     pub fn into_io_error(self) -> Option<io::Error> {
         match self.kind {

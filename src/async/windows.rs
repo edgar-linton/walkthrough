@@ -43,9 +43,8 @@ impl DirEntry<Async> {
             .await
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
         let mut file_type = raw.file_type();
-        // Only a followed symlink needs a fresh `metadata` call; for a real
-        // directory the `DirEntry`'s own metadata is served from the directory
-        // scan that produced it, at no extra syscall.
+        // Only a followed symlink needs a fresh `metadata` call; a real
+        // directory's came from the scan that produced the entry.
         let metadata = if file_type.is_symlink_dir() && follow_link {
             let resolved = fs::metadata(&path)
                 .await
@@ -99,9 +98,8 @@ impl DirEntry<Async> {
     }
 
     pub(crate) async fn ancestor(&self) -> Option<Ancestor> {
-        // FILE_FLAG_BACKUP_SEMANTICS is required to open a directory handle
-        // (including when the path resolves to a directory via a symlink).
-        // Without it, CreateFile returns ERROR_ACCESS_DENIED for directories.
+        // FILE_FLAG_BACKUP_SEMANTICS is required for a directory handle;
+        // without it CreateFile returns ERROR_ACCESS_DENIED.
         let file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)

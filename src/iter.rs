@@ -7,12 +7,19 @@ use crate::DirEntry;
 
 /// Orders two entries within a directory.
 ///
-/// Synchronous, and deliberately so: everything a [`DirEntry`] carries without
-/// I/O — path, file name, file type, depth — is reachable from a comparator, and
-/// [`DirEntry::metadata`] is cached, so reading it from here costs one `stat` per
-/// entry rather than one per comparison. The async walker cannot borrow this
-/// shape and takes a key function instead; see
-/// [`AsyncWalkDir::sort_by`](crate::AsyncWalkDir::sort_by).
+/// [`DirEntry::metadata`] is cached, so reading it here costs one `stat` per
+/// entry, not one per comparison. The async walker takes a key instead; see
+#[cfg_attr(feature = "async", doc = "[`AsyncWalkDir::sort_by`].")]
+#[cfg_attr(not(feature = "async"), doc = "`AsyncWalkDir::sort_by`.")]
+///
+#[cfg_attr(
+    feature = "async",
+    doc = "[`AsyncWalkDir::sort_by`]: crate::async::AsyncWalkDir::sort_by"
+)]
+//
+// Links into the async half come in this pair: the target only exists with the
+// feature on, and a broken link is denied. The path is `crate::async`, not
+// `crate::r#async` — rustdoc reads the `#` as a URL fragment.
 #[allow(clippy::type_complexity)]
 pub(crate) struct Sorter(
     pub(crate) Box<dyn FnMut(&DirEntry, &DirEntry) -> Ordering + Send + 'static>,
@@ -30,8 +37,8 @@ impl std::fmt::Debug for Sorter {
     }
 }
 
-// Configuration shared by both walkers. Sorting is not part of it: the two
-// walkers order entries by different means, so each builder owns its own sorter.
+// Shared by both walkers. Sorting is not, since each builder owns its own
+// sorter type.
 #[derive(Debug)]
 pub(crate) struct WalkDirOptions {
     pub(crate) min_depth: usize,
@@ -97,11 +104,8 @@ impl WalkDir {
 
     /// Controls whether hidden entries are skipped.
     ///
-    /// Applies only to entries discovered during recursion; a hidden
-    /// directory is excluded from the walk entirely, not merely from the
-    /// output, so its subtree is never read. The root passed to
-    /// [`new`](Self::new) is exempt and is always yielded and descended into
-    /// regardless of its own hidden status, since walking it was explicit.
+    /// A hidden directory is excluded from the walk, so its subtree is never
+    /// read. The root passed to [`new`](Self::new) is exempt.
     pub fn skip_hidden(mut self, yes: bool) -> Self {
         self.opts.skip_hidden = yes;
         self
@@ -109,17 +113,23 @@ impl WalkDir {
 
     /// Sets the comparator used to order the entries within each directory.
     ///
-    /// The comparator may read anything a [`DirEntry`] offers, including
-    /// [`metadata`](DirEntry::metadata) — the value is cached on the entry, so an
-    /// ordering by size or timestamp costs one `stat` per entry, not one per
-    /// comparison. Entries that failed outright are placed ahead of the rest
-    /// without reaching the comparator, and [`group_dir`](Self::group_dir) is
-    /// applied afterwards. Calling this more than once keeps the last comparator.
+    /// The comparator may read [`metadata`](DirEntry::metadata), which is
+    /// cached, so an ordering by size costs one `stat` per entry. Entries that
+    /// failed outright are placed first without reaching the comparator, and
+    /// [`group_dir`](Self::group_dir) is applied afterwards. The last call wins.
     ///
-    /// The asynchronous counterpart takes a key function rather than a
-    /// comparator, because a synchronous comparator cannot await
-    /// [`AsyncDirEntry::metadata`](crate::AsyncDirEntry::metadata); see
-    /// [`AsyncWalkDir::sort_by`](crate::AsyncWalkDir::sort_by).
+    /// The asynchronous counterpart takes a key, since a comparator cannot
+    /// await an
+    #[cfg_attr(feature = "async", doc = "[`AsyncDirEntry`]'s `metadata`; see")]
+    #[cfg_attr(not(feature = "async"), doc = "`AsyncDirEntry`'s `metadata`; see")]
+    #[cfg_attr(feature = "async", doc = "[`AsyncWalkDir::sort_by`].")]
+    #[cfg_attr(not(feature = "async"), doc = "`AsyncWalkDir::sort_by`.")]
+    ///
+    #[cfg_attr(
+        feature = "async",
+        doc = "[`AsyncDirEntry`]: crate::async::AsyncDirEntry",
+        doc = "[`AsyncWalkDir::sort_by`]: crate::async::AsyncWalkDir::sort_by"
+    )]
     ///
     /// # Example
     ///

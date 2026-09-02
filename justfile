@@ -48,12 +48,23 @@ pre-commit: fmt clippy test
 @cov:
     cargo llvm-cov --all-features --workspace --open
 
+# Mirrors [package.metadata.docs.rs] in Cargo.toml — keep the two in step
+[group('dev')]
+[doc('Build and open the public docs as docs.rs will render them')]
+@doc:
+    RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo doc --all-features --no-deps --open
+
+# Neither configuration alone checks every link; this is what CI runs
+[group('dev')]
+[doc('Check the docs build clean with and without the async feature')]
+@doc-check:
+    cargo doc --no-deps --document-private-items
+    cargo doc --no-deps --document-private-items --all-features
+
 # ── Release ───────────────────────────────────────────────────────────────────
 #
-# CI runs its own checks directly (see .github/workflows/) rather than through
-# just, so there's one place — the workflow file — that defines what actually
-# gates a merge or a publish. These recipes are for a human cutting a release:
-# bump Cargo.toml and CHANGELOG.md by hand, commit, then `just tag`.
+# CI defines what gates a merge (see .github/workflows/); these are for a human
+# cutting a release: bump Cargo.toml and CHANGELOG.md, commit, then `just tag`.
 
 # Dry-run cargo publish without uploading anything
 [group('release')]

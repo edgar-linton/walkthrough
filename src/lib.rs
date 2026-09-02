@@ -3,27 +3,19 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(test, deny(warnings))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Denied in every feature configuration, so a link into `async` from
+// always-compiled code needs the `cfg_attr` pair shown in `iter::Sorter`.
+#![deny(rustdoc::broken_intra_doc_links)]
 
-//! # Recursive Directory Traversal
+//! Recursive directory traversal.
 //!
-//! This crate provides a flexible and efficient way to recursively walk through
-//! directories. It handles common tasks like:
+//! [`WalkDir`] walks synchronously. With the `async` feature,
+#![cfg_attr(feature = "async", doc = "[`r#async`](crate::async)")]
+#![cfg_attr(not(feature = "async"), doc = "`walkthrough::r#async`")]
+//! walks asynchronously, resolving each directory's entries concurrently.
 //!
-//! * Filtering hidden files.
-//! * Setting minimum and maximum recursion depth.
-//! * Following or ignoring symbolic links.
-//! * Sorting entries within a directory — by a comparator over the entry when
-//!   walking synchronously, or by an asynchronously computed key when walking
-//!   asynchronously, where metadata is only reachable through an `await`.
-//! * Detecting symbolic link loops to prevent infinite recursion.
-//! * Resolving a directory's entries concurrently when walking asynchronously,
-//!   so a directory's latency is the longest of its entries' rather than the
-//!   sum — which is the difference between milliseconds and seconds on a
-//!   network mount.
-//! * Paging an asynchronous walk with `limit` and `offset`, for a listing
-//!   endpoint that has to expose the same pair as the rest of its API.
-//!
-//! ## Example
+//! Both offer min/max depth, symlink following, symlink-loop detection,
+//! hidden-file filtering, sorting, and directory grouping.
 //!
 //! ```no_run
 //! use walkthrough::WalkDir;
@@ -36,8 +28,7 @@
 //! }
 //! ```
 
-// Unsupported targets produce a clear compile error rather than a cryptic
-// "method not found" cascade from the missing platform-specific impl modules.
+// Keeps the error to one line instead of a cascade of missing platform methods.
 #[cfg(not(any(unix, windows)))]
 compile_error!("walkthrough only supports Unix and Windows targets");
 
@@ -46,10 +37,10 @@ mod error;
 mod iter;
 mod sync;
 
+// Items inside inherit the module's `doc(cfg)` marker.
 #[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub mod r#async;
-#[cfg(feature = "async")]
-pub use r#async::{Async, AsyncDirEntry, AsyncWalkDir, AsyncWalker};
 pub(crate) use entry::Ancestor;
 pub use entry::DirEntry;
 pub use error::{Error, ErrorKind, Result};

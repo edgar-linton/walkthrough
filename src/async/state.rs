@@ -17,32 +17,20 @@ use crate::{DirEntry, Error, Result, iter::WalkDirOptions};
 pub struct Async;
 
 /// Default for [`AsyncWalkDir::concurrency`].
-///
-/// Most of the win on a local filesystem is already taken at 32, where the
-/// remaining cost is Tokio's blocking-pool dispatch rather than the syscall.
 const DEFAULT_CONCURRENCY: usize = 32;
 
-/// Whether a symlink loop is unreachable unless links are followed, and the
-/// walker may therefore skip its ancestor bookkeeping — one `stat` per
-/// descended directory — when [`AsyncWalkDir::follow_links`] is off.
+/// Whether ancestor bookkeeping may be skipped when
+/// [`AsyncWalkDir::follow_links`] is off.
 ///
-/// True on Unix: a symlink is not descended into unless followed, and the
-/// platform does not permit a hardlinked directory, so no cycle is reachable.
-///
-/// False on Windows, where a directory junction is a reparse point the platform
-/// can report as a directory rather than as a link. A cycle through one is not
-/// provably unreachable with `follow_links` off, and a missed loop is an
-/// infinite walk — the wrong side to be wrong on to save one `stat`.
+/// False on Windows: a directory junction can be reported as a directory
+/// rather than a link, so a cycle through one stays reachable. A missed loop
+/// walks forever.
 #[cfg(unix)]
 const LOOPS_NEED_FOLLOW_LINKS: bool = true;
 #[cfg(windows)]
 const LOOPS_NEED_FOLLOW_LINKS: bool = false;
 
 /// Configuration that only the asynchronous walker has.
-///
-/// Kept out of [`WalkDirOptions`] because the synchronous walker has nothing
-/// to overlap and no pagination, so sharing the fields would mean three
-/// options it must document as ignored.
 #[derive(Debug, Clone, Copy)]
 struct AsyncOptions {
     concurrency: usize,
@@ -68,28 +56,21 @@ struct Order {
 }
 
 impl Order {
-    /// The grouping component of the order.
-    ///
-    /// `false` sorts first, so directories lead when
-    /// [`group_dir`](AsyncWalkDir::group_dir) is set. Grouping is part of the
-    /// comparison rather than a pass over the sorted result, which is what
-    /// keeps the order total.
+    /// The grouping component of the order; `false` sorts first, so
+    /// directories lead when [`group_dir`](AsyncWalkDir::group_dir) is set.
     fn grouped_entry(&self, entry: &DirEntry<Async>) -> bool {
         self.group_dir && !entry.is_dir()
     }
 
-    /// As [`grouped_entry`](Self::grouped_entry), for an entry that may have
-    /// failed outright — which is not a known directory.
+    /// As [`grouped_entry`](Self::grouped_entry), for a possibly failed entry,
+    /// which is not a known directory.
     fn grouped(&self, entry: &Result<DirEntry<Async>>) -> bool {
         self.group_dir && !entry.as_ref().is_ok_and(DirEntry::is_dir)
     }
 }
 
-/// The name component of the order, and the reason the order is total: a file
-/// name is unique within its directory.
-///
-/// A failed entry is ordered by the file name of the path it failed on, so it
-/// still has a reproducible position.
+/// The name component of the order, which makes it total: a file name is
+/// unique within its directory.
 fn order_name(entry: &Result<DirEntry<Async>>) -> OsString {
     match entry {
         Ok(entry) => entry.file_name().to_owned(),
@@ -97,8 +78,7 @@ fn order_name(entry: &Result<DirEntry<Async>>) -> OsString {
     }
 }
 
-/// The name component of the order for an entry that failed outright: the file
-/// name of the path it failed on.
+/// Order name for a failed entry: the file name of the path it failed on.
 fn error_name(err: &Error) -> OsString {
     err.path()
         .file_name()
@@ -125,13 +105,9 @@ type SortFuture = Pin<Box<dyn Future<Output = Vec<Result<DirEntry<Async>>>> + Se
 
 /// Orders the entries of one directory by an asynchronously computed key.
 ///
-/// Holds the whole resolve-and-sort step rather than the key function, which is
-/// why the key type does not appear here: [`AsyncWalkDir::sort_by`]
-/// monomorphises the step and stores it as one closure, so the walker can order
-/// entries by any [`Ord`] key without becoming generic over it.
-///
-/// `Sync` as well as `Send`, because the walker borrows the sorter across an
-/// `await` and a walk has to stay spawnable.
+/// Holds the whole resolve-and-sort step, not the key function, so the walker
+/// need not be generic over the key type. `Sync` because the walker borrows it
+/// across an `await`.
 #[allow(clippy::type_complexity)]
 struct Sorter(Box<dyn Fn(Vec<Result<DirEntry<Async>>>, Order) -> SortFuture + Send + Sync>);
 
@@ -151,11 +127,10 @@ impl fmt::Debug for Sorter {
     }
 }
 
-/// Applies `task` to every item, at most `concurrency` of them in flight at
-/// once, and returns the results in the order the items were given.
+/// Applies `task` to every item, at most `concurrency` in flight at once.
 ///
-/// Results are placed by input position rather than by completion order, so
-/// concurrency cannot influence the order the walker goes on to yield.
+/// Results are placed by input position, never by completion order, so
+/// concurrency cannot influence the order the walker yields.
 async fn map_bounded<T, U, Fut, F>(items: Vec<T>, concurrency: usize, task: F) -> Vec<U>
 where
     T: Send + 'static,
@@ -163,8 +138,7 @@ where
     F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = U> + Send + 'static,
 {
-    // Not worth a task per item, and keeps `concurrency(1)` exactly as cheap
-    // as the sequential walk it replaces.
+    // Keeps `concurrency(1)` as cheap as a sequential walk.
     if concurrency <= 1 || items.len() <= 1 {
         let mut out = Vec::with_capacity(items.len());
         for item in items {
@@ -192,9 +166,8 @@ where
     while let Some(joined) = set.join_next().await {
         let (index, value) = match joined {
             Ok(value) => value,
-            // A panicking key function used to panic the caller directly,
-            // before any of this ran on a spawned task. Keep it that way
-            // rather than swallowing the panic or reporting it as I/O.
+            // A panicking key function panics the caller, as it did before
+            // the work moved onto a task.
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
             Err(err) => unreachable!("the walker never aborts its own tasks: {err}"),
         };
@@ -215,8 +188,8 @@ enum Raw {
 
 /// Reads every child of `path` without resolving any of them.
 ///
-/// Enumeration is cheap — one `getdents` batch per 32 entries, no `stat` — so
-/// it stays sequential; the expensive part is [`resolve`].
+/// Enumeration needs no `stat`, so it stays sequential; [`resolve`] is the
+/// expensive half.
 async fn read_raw(path: &Path, depth: usize) -> Result<Vec<Raw>> {
     let mut rd = fs::read_dir(path)
         .await
@@ -237,13 +210,11 @@ async fn read_raw(path: &Path, depth: usize) -> Result<Vec<Raw>> {
     Ok(raw)
 }
 
-/// Turns raw children into entries, resolving at most `concurrency` of them at
-/// once, and drops hidden entries when asked.
+/// Turns raw children into entries, at most `concurrency` at once, and drops
+/// hidden entries when asked.
 ///
-/// Both per-entry resolves live here — the file type, which costs a `stat` on a
-/// filesystem that does not populate `d_type`, and the hidden flag, which costs
-/// one on Windows — so a directory's worth of them overlaps instead of adding
-/// up.
+/// Both per-entry `stat`s live here — file type without `d_type`, and the
+/// hidden flag on Windows — so a directory's overlap.
 async fn resolve(
     raw: Vec<Raw>,
     depth: usize,
@@ -255,8 +226,8 @@ async fn resolve(
         match raw {
             Raw::Failed(err) => Some(Err(err)),
             Raw::Entry(raw) => match DirEntry::<Async>::from_std(&raw, depth, follow_links).await {
-                // A hidden directory is excluded from the walk entirely, so
-                // dropping it here also prevents descent into it.
+                // Dropped here, not in the walker loop, so a hidden
+                // directory is never descended into.
                 Ok(entry) if skip_hidden && entry.is_hidden().await => None,
                 resolved => Some(resolved),
             },
@@ -267,13 +238,12 @@ async fn resolve(
     resolved.into_iter().flatten().collect()
 }
 
-/// Orders `entries` by `key`, awaiting the key of every entry exactly once and
-/// at most `order.concurrency` at a time.
+/// Orders `entries` by `key`, awaiting each key once, at most
+/// `order.concurrency` at a time.
 ///
-/// The entry is shared with the key function through an [`Arc`] and recovered
-/// afterwards, so metadata the key resolved stays cached on the entry the walker
-/// goes on to yield. Every task is joined before an entry is recovered, so the
-/// key's clone is gone and the recovery does not copy.
+/// The key sees the entry through an [`Arc`], recovered after every task is
+/// joined, so metadata the key resolved stays cached and the recovery does not
+/// copy.
 async fn sort_by_key<K, Fut, F>(
     key: Arc<F>,
     entries: Vec<Result<DirEntry<Async>>>,
@@ -310,8 +280,7 @@ where
     let mut ordered: Vec<Ordered<K>> = pending
         .into_iter()
         .map(|pending| match pending {
-            // No key, and `None` sorts ahead of every `Some`, which is where a
-            // failed entry belongs.
+            // `None` sorts ahead of every `Some`.
             Pending::Failed(err) => Ordered {
                 grouped: order.group_dir,
                 key: None,
@@ -331,24 +300,22 @@ where
         })
         .collect();
 
-    // Total, in precedence order: grouping, then failed entries, then the key,
-    // then the file name — which no two entries of one directory share.
+    // Precedence: grouping, failed entries, key, file name.
     ordered.sort_by(|a, b| (a.grouped, &a.key, &a.name).cmp(&(b.grouped, &b.key, &b.name)));
     ordered.into_iter().map(|ordered| ordered.entry).collect()
 }
 
-/// Orders `entries` when [`group_dir`](AsyncWalkDir::group_dir) is set but no
-/// sort key is, by the same total order minus the key.
+/// Orders `entries` for [`group_dir`](AsyncWalkDir::group_dir) without a key:
+/// the same order minus the key.
 fn sort_grouped(entries: &mut [Result<DirEntry<Async>>], order: Order) {
     entries.sort_by_cached_key(|entry| {
-        // `false` first, so a failed entry leads as it does with a key, where
-        // its `None` sorts ahead of every `Some`.
+        // `false` first, so a failed entry leads as it does with a key.
         (order.grouped(entry), entry.is_ok(), order_name(entry))
     });
 }
 
-// Stack item: pre-ordered entries (when sort_by or group_dir is set) or a live
-// ReadDir handle (the common unordered case, which avoids collecting upfront).
+// Stack item: pre-ordered entries (sort_by or group_dir set), or a live
+// ReadDir handle, which never materialises the directory.
 enum DirStream {
     Sorted(vec::IntoIter<Result<DirEntry<Async>>>),
     Live {
@@ -358,8 +325,7 @@ enum DirStream {
         follow_links: bool,
         skip_hidden: bool,
         concurrency: usize,
-        // Resolved and not yet yielded. At most `concurrency` entries, so the
-        // streaming path still never materialises a directory.
+        // Resolved, not yet yielded; at most `concurrency` entries.
         ready: vec::IntoIter<Result<DirEntry<Async>>>,
     },
 }
@@ -394,8 +360,7 @@ impl DirStream {
                     return Some(entry);
                 }
 
-                // Refill: read up to `concurrency` raw entries, then resolve
-                // them as one batch so their I/O overlaps.
+                // Refill one batch, so its per-entry I/O overlaps.
                 let mut raw = Vec::with_capacity(*concurrency);
                 while raw.len() < *concurrency {
                     match rd.next_entry().await {
@@ -415,8 +380,7 @@ impl DirStream {
                 *ready = resolve(raw, *depth, *follow_links, *skip_hidden, *concurrency)
                     .await
                     .into_iter();
-                // A batch can be emptied entirely by `skip_hidden`, so loop
-                // rather than returning `None` on an empty one.
+                // `skip_hidden` can empty a whole batch, hence the loop.
             },
         }
     }
@@ -468,11 +432,8 @@ impl AsyncWalkDir {
 
     /// Controls whether hidden entries are skipped.
     ///
-    /// Applies only to entries discovered during recursion; a hidden
-    /// directory is excluded from the walk entirely, not merely from the
-    /// output, so its subtree is never read. The root passed to
-    /// [`new`](Self::new) is exempt and is always yielded and descended into
-    /// regardless of its own hidden status, since walking it was explicit.
+    /// A hidden directory is excluded from the walk, so its subtree is never
+    /// read. The root passed to [`new`](Self::new) is exempt.
     pub fn skip_hidden(mut self, yes: bool) -> Self {
         self.opts.skip_hidden = yes;
         self
@@ -480,46 +441,13 @@ impl AsyncWalkDir {
 
     /// Sets how many entries of one directory may have I/O in flight at once.
     ///
-    /// Defaults to 32, and is clamped to at least 1. The bounded work is every
-    /// per-entry resolve the walker performs: the [`sort_by`](Self::sort_by)
-    /// key, the file type on a filesystem that does not populate `d_type`, and
-    /// the hidden flag on Windows. Without it those are awaited one entry at a
-    /// time, so a directory's latency is the sum of its entries' rather than
-    /// the longest of them.
+    /// Defaults to 32, clamped to at least 1. Bounds every per-entry resolve:
+    /// the [`sort_by`](Self::sort_by) key, the file type on a filesystem
+    /// without `d_type`, and the hidden flag on Windows. Never affects order.
     ///
-    /// This matters in proportion to how slow one entry is. A local filesystem
-    /// resolves metadata in microseconds and sees roughly a threefold
-    /// improvement, bounded by Tokio's blocking-pool dispatch rather than by
-    /// the syscall. A network mount or FUSE layer where one `stat` costs
-    /// milliseconds is bound by round trips instead, and 128–512 is reasonable
-    /// there: 2000 entries at 5 ms each take 10 s sequentially and 175 ms at a
-    /// concurrency of 64.
-    ///
-    /// There is deliberately no unbounded setting, since a directory with a
-    /// million children would then start a million concurrent resolves.
-    ///
-    /// Concurrency never affects the order entries are yielded in; results are
-    /// placed by directory position, not by completion.
-    ///
-    /// The synchronous walker has no counterpart, having nothing to overlap.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn run() -> walkthrough::Result<()> {
-    /// use walkthrough::AsyncWalkDir;
-    ///
-    /// // A listing on a network mount: bound by round trips, not by CPU.
-    /// let mut walker = AsyncWalkDir::new("/mnt/share")
-    ///     .max_depth(1)
-    ///     .concurrency(256)
-    ///     .sort_by(|entry| async move { entry.metadata().await.map(|m| m.len()).unwrap_or(0) })
-    ///     .walker()
-    ///     .await;
-    /// # while let Some(entry) = walker.next().await { entry?; }
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// The win scales with per-entry latency: threefold on a local filesystem,
+    /// far more on a network mount, where 128–512 is reasonable.
+    /// `examples/latency_probe.rs` measures it. There is no unbounded setting.
     pub fn concurrency(mut self, n: usize) -> Self {
         self.async_opts.concurrency = n.max(1);
         self
@@ -527,18 +455,10 @@ impl AsyncWalkDir {
 
     /// Yields at most `limit` entries, then ends the walk.
     ///
-    /// Counted over the entries the walk yields, across the whole traversal
-    /// rather than per directory, so it composes with
-    /// [`min_depth`](Self::min_depth) and [`skip_hidden`](Self::skip_hidden)
-    /// the way SQL's `LIMIT` composes with a `WHERE` clause. Errors the walk
-    /// reports are entries for this purpose. `limit(0)` yields nothing.
-    ///
-    /// A limited walk stops descending once it is satisfied, so it is cheaper
-    /// than an unlimited one — but it still resolves every entry of every
-    /// directory it opens, because ordering by a key requires the key of every
-    /// candidate. `limit` bounds what a caller receives, not what the
-    /// filesystem is asked; [`concurrency`](Self::concurrency) is what makes
-    /// the latter fast.
+    /// Counted over the whole traversal, not per directory; reported errors
+    /// count as entries. `limit(0)` yields nothing. Descent stops once the
+    /// limit is met, but every entry of an opened directory is still resolved,
+    /// since ordering needs every key.
     pub fn limit(mut self, limit: usize) -> Self {
         self.async_opts.limit = limit;
         self
@@ -546,21 +466,14 @@ impl AsyncWalkDir {
 
     /// Skips the first `offset` entries the walk would yield.
     ///
-    /// Together with [`limit`](Self::limit) this is `skip(offset).take(limit)`
-    /// over the unpaginated walk, which is what makes it interchangeable with
-    /// the `OFFSET`/`LIMIT` pair of an SQL-backed listing. An `offset` past the
-    /// end of the walk yields nothing, and is not an error.
+    /// With [`limit`](Self::limit) this is `skip(offset).take(limit)` over the
+    /// unpaginated walk; a skipped directory is still descended into. An
+    /// `offset` past the end yields nothing.
     ///
-    /// Two caveats it shares with SQL offsets, both worth passing on to
-    /// whoever consumes the pages:
-    ///
-    /// - Entries created or removed between two requests can make a page skip
-    ///   or repeat an entry. An offset is a position, not a snapshot.
-    /// - It is only meaningful over a reproducible order. With neither
-    ///   [`sort_by`](Self::sort_by) nor [`group_dir`](Self::group_dir),
-    ///   entries arrive in filesystem order, which is not reproducible across
-    ///   two `read_dir` calls of the same directory. Set an ordering when
-    ///   paginating.
+    /// Requires a reproducible order — set [`sort_by`](Self::sort_by) or
+    /// [`group_dir`](Self::group_dir), since filesystem order is not stable
+    /// across two `read_dir` calls. Entries added or removed between requests
+    /// can still make a page skip or repeat one.
     pub fn offset(mut self, offset: usize) -> Self {
         self.async_opts.offset = offset;
         self
@@ -568,43 +481,30 @@ impl AsyncWalkDir {
 
     /// Sets the key used to order the entries within each directory.
     ///
-    /// The key is computed asynchronously, so it may await
-    /// [`metadata`](DirEntry::metadata) — the one property of an entry that is
-    /// not reachable without I/O. Ordering by size or modification time is
-    /// therefore expressed here rather than through a comparator: a synchronous
-    /// comparator cannot await, and blocking inside one panics with "Cannot start
-    /// a runtime from within a runtime" on any Tokio runtime, which is a `500` if
-    /// the walk happens inside a request handler.
+    /// The key may await [`metadata`](DirEntry::metadata); a comparator cannot,
+    /// and blocking in one panics with "Cannot start a runtime from within a
+    /// runtime". Each key is awaited once before ordering,
+    /// [`concurrency`](Self::concurrency) at a time, so an ordering by size
+    /// costs one `stat` per entry rather than one per comparison.
     ///
-    /// The walker awaits the key of every entry exactly once, before ordering, so
-    /// an ordering by size costs one `stat` per entry rather than one per
-    /// comparison. Keys are resolved [`concurrency`](Self::concurrency) at a
-    /// time, so a directory costs roughly one key's latency per batch instead
-    /// of one per entry. Keys that await nothing cost nothing beyond the key
-    /// itself.
+    /// The entry arrives as an [`Arc`], so the key may hold it across an
+    /// `await`, and metadata it resolves stays cached on the yielded entry.
+    /// Tuple keys give compound orderings, [`Reverse`](std::cmp::Reverse)
+    /// descending order. The last call wins.
     ///
-    /// The entry arrives as an [`Arc`] so the key may hold it across an `await`;
-    /// metadata resolved inside the key stays cached on the entry the walk yields.
-    /// Compound orderings are tuple keys, and descending order is
-    /// [`Reverse`](std::cmp::Reverse). Calling this more than once keeps the last
-    /// key.
+    /// The order is total, in precedence order:
+    /// [`group_dir`](Self::group_dir), then entries that failed outright, then
+    /// the key, then the file name — which is what
+    /// [`offset`](Self::offset) needs to be a stable position.
     ///
-    /// The resulting order is total, and is, in precedence order:
-    /// [`group_dir`](Self::group_dir) if set, then entries that failed outright
-    /// — for which no key is computed — then the key, then the file name. The
-    /// name is what makes it total, and therefore reproducible between two
-    /// walks of the same directory, which is what
-    /// [`offset`](Self::offset) needs.
-    ///
-    /// The synchronous counterpart takes a comparator rather than a key, since
-    /// [`DirEntry::metadata`](crate::DirEntry::metadata) is directly readable
-    /// there; see [`WalkDir::sort_by`](crate::WalkDir::sort_by).
+    /// The synchronous counterpart takes a comparator; see
+    /// [`WalkDir::sort_by`](crate::WalkDir::sort_by).
     ///
     /// # Example
     ///
     /// ```no_run
     /// # async fn run() -> walkthrough::Result<()> {
-    /// use walkthrough::AsyncWalkDir;
+    /// use walkthrough::r#async::AsyncWalkDir;
     ///
     /// // Directories first, then smallest file first, ties broken by name.
     /// let mut walker = AsyncWalkDir::new("src")
@@ -674,8 +574,7 @@ impl AsyncWalker {
     async fn push_dir(&mut self, entry: &DirEntry<Async>) -> Result<()> {
         let depth = entry.depth();
 
-        // Resolving an ancestor costs one `stat` per directory, so it is worth
-        // skipping where it cannot fire — which is platform-dependent; see
+        // One `stat` per directory, skipped where a loop cannot occur; see
         // `LOOPS_NEED_FOLLOW_LINKS`.
         if self.opts.follow_links || !LOOPS_NEED_FOLLOW_LINKS {
             self.ancestors.truncate(depth);
@@ -749,9 +648,7 @@ impl AsyncWalker {
     /// Returns the next entry.
     ///
     /// With [`limit`](AsyncWalkDir::limit) or [`offset`](AsyncWalkDir::offset)
-    /// set, this is `skip(offset).take(limit)` over the entries the walk would
-    /// otherwise produce. Skipped entries are still descended into, so a page
-    /// is a window over the traversal rather than a truncation of it.
+    /// set, this is `skip(offset).take(limit)` over the unpaginated walk.
     pub async fn next(&mut self) -> Option<Result<DirEntry<Async>>> {
         loop {
             if self.yielded >= self.async_opts.limit {
@@ -800,8 +697,8 @@ impl AsyncWalker {
                 }
             };
 
-            // `skip_hidden` is applied while a directory's entries are
-            // resolved, so nothing hidden reaches here.
+            // `skip_hidden` is applied during resolve; nothing hidden reaches
+            // here.
             let entry = match res {
                 Err(err) => return Some(Err(err)),
                 Ok(e) => e,

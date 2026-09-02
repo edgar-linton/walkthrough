@@ -23,7 +23,12 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      # Both feature configurations: the featureless build never compiles the
+      # `async` module, so links inside it are only checked with the feature on,
+      # and links into it from the sync half only without it. Broken intra-doc
+      # links are denied at the crate root, so either build fails on one.
       - run: cargo doc --no-deps --document-private-items
+      - run: cargo doc --no-deps --document-private-items --all-features
       - name: Check CHANGELOG has an entry for the current version
         shell: bash
         run: |

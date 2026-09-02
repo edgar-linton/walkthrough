@@ -25,7 +25,7 @@
 use std::{fs, path::Path};
 
 use tempfile::TempDir;
-use walkthrough::{AsyncDirEntry, AsyncWalkDir};
+use walkthrough::r#async::{AsyncDirEntry, AsyncWalkDir};
 
 /// On Windows, mark a path as hidden by setting FILE_ATTRIBUTE_HIDDEN. On
 /// Unix the dot-prefix is sufficient and this is a no-op — mirrors the

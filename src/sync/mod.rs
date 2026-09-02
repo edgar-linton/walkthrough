@@ -13,13 +13,13 @@ use crate::{DirEntry, Error, Result};
 impl DirEntry<Sync> {
     /// Returns the metadata for this entry.
     ///
-    /// When `follow_links` is enabled the metadata reflects the symlink target;
-    /// otherwise it reflects the symlink itself.
+    /// Reflects the symlink target when `follow_links` is enabled, the symlink
+    /// itself otherwise.
     pub fn metadata(&self) -> Result<fs::Metadata, Error> {
         self.metadata_impl()
     }
 
-    /// Returns `true` if this entry is considered hidden by the operating system.
+    /// Returns `true` if the operating system considers this entry hidden.
     pub fn is_hidden(&self) -> bool {
         self.is_hidden_impl()
     }

@@ -7,7 +7,10 @@ use std::os::windows::fs as win_fs;
 use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 use tempfile::TempDir;
-use walkthrough::{Async, AsyncWalkDir, AsyncWalker, DirEntry, ErrorKind, Result};
+use walkthrough::{
+    DirEntry, ErrorKind, Result,
+    r#async::{Async, AsyncWalkDir, AsyncWalker},
+};
 
 // ---------------------------------------------------------------------------
 // Fixture helpers — identical structure to the sync suite

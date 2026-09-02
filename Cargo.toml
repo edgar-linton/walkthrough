@@ -9,6 +9,12 @@ license = "MIT OR Apache-2.0"
 keywords = ["filesystem", "walkdir", "recursive", "iterator"]
 categories = ["filesystem", "os"]
 
+# `--cfg docsrs` enables `feature(doc_cfg)` in lib.rs, which renders the
+# "Available on ..." badges. `just doc` reproduces this locally.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = []
 async = ["dep:tokio", "dep:futures-core", "dep:async-stream"]

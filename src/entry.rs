@@ -23,9 +23,8 @@ pub struct DirEntry<T = Sync> {
     pub(super) state: PhantomData<T>,
 }
 
-// Written out rather than derived: the state is a `PhantomData` marker, so a
-// clone never depends on it, but a derived impl would demand `T: Clone` and
-// therefore apply to neither state.
+// Not derived: a derived impl would demand `T: Clone`, which neither state
+// marker satisfies.
 impl<T> Clone for DirEntry<T> {
     fn clone(&self) -> Self {
         Self {
@@ -66,7 +65,7 @@ impl<T> DirEntry<T> {
         self.file_type.is_dir()
     }
 
-    /// Returns the depth of this entry relative to the traversal root.
+    /// Returns the depth relative to the traversal root.
     #[inline]
     pub fn depth(&self) -> usize {
         self.depth
@@ -82,6 +81,7 @@ impl<T> DirEntry<T> {
 }
 
 #[cfg(unix)]
+#[cfg_attr(docsrs, doc(cfg(unix)))]
 impl std::os::unix::fs::DirEntryExt for DirEntry {
     fn ino(&self) -> u64 {
         self.ino

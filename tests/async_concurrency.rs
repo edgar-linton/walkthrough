@@ -19,7 +19,7 @@ use std::{
 };
 
 use tempfile::TempDir;
-use walkthrough::{AsyncDirEntry, AsyncWalkDir};
+use walkthrough::r#async::{AsyncDirEntry, AsyncWalkDir};
 
 /// On Windows, mark a path as hidden by setting FILE_ATTRIBUTE_HIDDEN — a dot
 /// prefix means nothing there. On Unix the prefix is sufficient and this is a

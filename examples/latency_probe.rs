@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use walkthrough::{AsyncDirEntry, AsyncWalkDir};
+use walkthrough::r#async::{AsyncDirEntry, AsyncWalkDir};
 
 /// Enumeration alone: one `getdents` batch per 32 entries, no `stat`.
 async fn names_only(root: &Path) -> (usize, Duration) {

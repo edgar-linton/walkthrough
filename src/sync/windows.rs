@@ -87,9 +87,8 @@ impl DirEntry<Sync> {
     }
 
     pub(crate) fn ancestor(&self) -> Option<Ancestor> {
-        // FILE_FLAG_BACKUP_SEMANTICS is required to open a directory handle
-        // (including when the path resolves to a directory via a symlink).
-        // Without it, CreateFile returns ERROR_ACCESS_DENIED for directories.
+        // FILE_FLAG_BACKUP_SEMANTICS is required for a directory handle;
+        // without it CreateFile returns ERROR_ACCESS_DENIED.
         let file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)

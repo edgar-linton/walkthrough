@@ -70,6 +70,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- **Breaking (API):** the async types are no longer re-exported at the crate
+  root. `Async`, `AsyncDirEntry`, `AsyncWalkDir` and `AsyncWalker` are reached
+  through the `async` module:
+
+  ```rust
+  use walkthrough::r#async::AsyncWalkDir;
+  ```
+
+  The names already carry the prefix, so the root re-export spelled it twice,
+  and the module path is what makes a `use` line say which half of the crate it
+  pulls in.
+
 - **Breaking (behaviour):** entries whose sort keys compare equal are now
   ordered by file name. The order within a directory is, in precedence order,
   `group_dir` if set, then entries that failed outright, then the key, then the
@@ -86,6 +98,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   two.
 
 ### Fixed
+
+- docs.rs now documents the asynchronous half of the crate. `async` is off by
+  default, and docs.rs built with default features, so the module and all four
+  of its types were absent from
+  [0.3.0's documentation](https://docs.rs/walkthrough/0.3.0/walkthrough/)
+  entirely. `[package.metadata.docs.rs]` now asks for every feature and for
+  `--cfg docsrs`, which is also what turns the "Available on crate feature
+  `async` only" and "Available on Unix only" labels on. `just doc` renders the
+  same thing locally.
+
+- Documentation links no longer break in any feature configuration.
+  `rustdoc::broken_intra_doc_links` is denied at the crate root, and the sync
+  half's cross-references into the `async` module are written as a `cfg_attr`
+  pair — linked with the feature on, the same sentence with the name as plain
+  code without it — since the module is not a link target in a build that
+  excludes it. CI documents both configurations; `just doc-check` runs the same
+  pair locally.
+
+- The `async` module now carries an overview — the builder's relationship to
+  `WalkDir`, a runnable example, and the three ways the asynchronous walker
+  differs — rather than a one-line summary, and the crate root documents the
+  feature flag that gates it.
 
 - A directory's metadata is no longer resolved when its entry is constructed.
   `d_type` already gives the file type and `d_ino` the directory's own inode, so
