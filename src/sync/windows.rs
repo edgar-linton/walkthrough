@@ -12,10 +12,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
 };
 
-use super::state::Sync;
+use super::state::Blocking;
 use crate::{Ancestor, DirEntry, Error};
 
-impl DirEntry<Sync> {
+impl DirEntry<Blocking> {
     pub(super) fn metadata_impl(&self) -> Result<fs::Metadata, Error> {
         if self.follow_link {
             fs::metadata(&self.path)

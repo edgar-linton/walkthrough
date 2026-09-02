@@ -5,11 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::Sync;
+use crate::Blocking;
 
 /// Directory entry.
 #[derive(Debug)]
-pub struct DirEntry<T = Sync> {
+pub struct DirEntry<T = Blocking> {
     pub(super) path: PathBuf,
     pub(super) file_type: fs::FileType,
     pub(super) follow_link: bool,

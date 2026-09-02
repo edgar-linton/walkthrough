@@ -6,11 +6,11 @@ mod windows;
 
 use std::fs;
 
-pub use state::{Sync, Walker};
+pub use state::{Blocking, Walker};
 
 use crate::{DirEntry, Error, Result};
 
-impl DirEntry<Sync> {
+impl DirEntry<Blocking> {
     /// Returns the metadata for this entry.
     ///
     /// Reflects the symlink target when `follow_links` is enabled, the symlink

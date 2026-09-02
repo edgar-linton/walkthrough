@@ -5,9 +5,9 @@ use crate::{
     iter::{Sorter, WalkDirOptions},
 };
 
-/// Synchronous state.
+/// Blocking state marker.
 #[derive(Debug)]
-pub struct Sync;
+pub struct Blocking;
 
 struct LiveDirIter {
     rd: fs::ReadDir,
@@ -17,11 +17,11 @@ struct LiveDirIter {
 }
 
 impl Iterator for LiveDirIter {
-    type Item = Result<DirEntry<Sync>>;
+    type Item = Result<DirEntry<Blocking>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.rd.next()? {
-            Ok(raw) => Some(DirEntry::<Sync>::from_std(
+            Ok(raw) => Some(DirEntry::<Blocking>::from_std(
                 &raw,
                 self.depth,
                 self.follow_links,
@@ -33,11 +33,11 @@ impl Iterator for LiveDirIter {
 
 enum DirStream {
     Live(Box<LiveDirIter>),
-    Sorted(vec::IntoIter<Result<DirEntry<Sync>>>),
+    Sorted(vec::IntoIter<Result<DirEntry<Blocking>>>),
 }
 
 impl Iterator for DirStream {
-    type Item = Result<DirEntry<Sync>>;
+    type Item = Result<DirEntry<Blocking>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
@@ -63,15 +63,15 @@ pub struct Walker {
     sort_by: Option<Sorter>,
     ancestors: Vec<Ancestor>,
     stack: Vec<DirStream>,
-    start: Option<Result<DirEntry<Sync>>>,
+    start: Option<Result<DirEntry<Blocking>>>,
 }
 
 impl IntoIterator for WalkDir {
     type IntoIter = Walker;
-    type Item = Result<DirEntry<Sync>>;
+    type Item = Result<DirEntry<Blocking>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let start = DirEntry::<Sync>::from_path(self.root, 0, self.opts.follow_links);
+        let start = DirEntry::<Blocking>::from_path(self.root, 0, self.opts.follow_links);
         Walker {
             start: Some(start),
             stack: vec![],
@@ -83,7 +83,7 @@ impl IntoIterator for WalkDir {
 }
 
 impl Walker {
-    fn push_dir(&mut self, entry: &DirEntry<Sync>) -> Result<()> {
+    fn push_dir(&mut self, entry: &DirEntry<Blocking>) -> Result<()> {
         let depth = entry.depth();
         // Truncating evicts a previous subtree's ancestors, so backtracking
         // needs no explicit pops.
@@ -120,16 +120,16 @@ impl Walker {
         &mut self,
         path: &std::path::Path,
         depth: usize,
-    ) -> Result<Vec<Result<DirEntry<Sync>>>> {
+    ) -> Result<Vec<Result<DirEntry<Blocking>>>> {
         let follow_links = self.opts.follow_links;
 
         let rd = fs::read_dir(path)
             .map_err(|err| Error::new_io_error(path.to_path_buf(), depth, err))?;
 
-        let mut entries: Vec<Result<DirEntry<Sync>>> = rd
+        let mut entries: Vec<Result<DirEntry<Blocking>>> = rd
             .map(|res| {
                 res.map_err(|err| Error::new_io_error(path.to_path_buf(), depth, err))
-                    .and_then(|raw| DirEntry::<Sync>::from_std(&raw, depth, follow_links))
+                    .and_then(|raw| DirEntry::<Blocking>::from_std(&raw, depth, follow_links))
             })
             .collect();
 
@@ -156,7 +156,7 @@ impl Walker {
 }
 
 impl Iterator for Walker {
-    type Item = Result<DirEntry<Sync>>;
+    type Item = Result<DirEntry<Blocking>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // First call: yield the root, descending if it is a directory within

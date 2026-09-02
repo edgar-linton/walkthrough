@@ -8,6 +8,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- `AsyncWalkDir::filter_entry` — an async predicate that decides each entry's
+  fate before the walker descends, returning the new `Filtering` enum:
+
+  ```rust
+  use walkthrough::r#async::{AsyncWalkDir, Filtering};
+
+  let walker = AsyncWalkDir::new(".")
+      .filter_entry(|entry| async move {
+          if entry.file_name() == "target" {
+              Filtering::IgnoreDir
+          } else {
+              Filtering::Continue
+          }
+      })
+      .walker();
+  ```
+
+  It is applied where `skip_hidden` is, so `IgnoreDir` prunes a subtree without
+  reading it — the one thing a downstream combinator cannot do, since by the
+  time a stream sees a directory the walker has already opened it.
+  `IgnoreEntry` drops the entry but still descends. The predicate may await
+  `metadata` and is bounded by `concurrency`; the traversal root is exempt, and
+  an entry that failed to resolve is reported without consulting it.
+
+- `AsyncWalker` implements `futures_core::Stream`, so the combinators of
+  `futures::StreamExt` and `tokio_stream::StreamExt` — `skip`, `take`,
+  `filter`, `map` — apply to a walker directly.
+
 - `AsyncWalkDir::concurrency` — how many entries of one directory may have I/O
   in flight at once, defaulting to 32:
 
@@ -70,6 +98,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- **Breaking (API):** the synchronous state marker is renamed from `Sync` to
+  `Blocking`, so `DirEntry<Sync>` becomes `DirEntry<Blocking>`. The old name
+  shadowed `std::marker::Sync` for anyone writing `use walkthrough::*`, which
+  broke every `T: Send + Sync` bound in that module.
+
+- **Breaking (API):** `AsyncWalkDir::walker` is no longer `async`. The root is
+  resolved on the first entry instead of at construction, so a builder no
+  longer needs a runtime to produce a walker, and an unreadable root arrives as
+  the first `Err` rather than failing at `walker()`.
+
+- **Breaking (API):** `AsyncWalker::next` is renamed to `next_entry`, as
+  tokio's `ReadDir::next_entry` is, so it no longer shadows `StreamExt::next`
+  for a caller who has that trait in scope.
+
+- **Breaking (API):** `AsyncWalker::into_stream` is removed. `AsyncWalker` now
+  implements `Stream` itself, so the conversion had nothing left to do.
+
 - **Breaking (API):** the async types are no longer re-exported at the crate
   root. `Async`, `AsyncDirEntry`, `AsyncWalkDir` and `AsyncWalker` are reached
   through the `async` module:
@@ -98,6 +143,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   two.
 
 ### Fixed
+
+- A walk with nothing to overlap no longer spawns a task per entry. On Unix
+  with no `sort_by` key, no `filter_entry` predicate and `follow_links` off,
+  resolving an entry does no I/O at all — `d_type` and `d_ino` give the file
+  type and inode, and `is_hidden` is a name check — yet every entry was still
+  dispatched through `JoinSet` at the default concurrency of 32. Resolution now
+  runs sequentially unless the configuration actually performs per-entry I/O.
+  On Windows it always does, since `is_hidden` needs `file_attributes`.
 
 - docs.rs now documents the asynchronous half of the crate. `async` is off by
   default, and docs.rs built with default features, so the module and all four

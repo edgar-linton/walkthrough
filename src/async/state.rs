@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
     vec,
 };
 
@@ -91,17 +92,20 @@ struct Ordered<K> {
     grouped: bool,
     key: Option<K>,
     name: OsString,
-    entry: Result<DirEntry<Async>>,
+    entry: Candidate,
 }
 
 /// One child of a directory, before its key is known.
 enum Pending {
     /// Failed outright, so no key is computed for it.
     Failed(Error),
-    Keyed(Arc<DirEntry<Async>>),
+    Keyed {
+        entry: Arc<DirEntry<Async>>,
+        yielded: bool,
+    },
 }
 
-type SortFuture = Pin<Box<dyn Future<Output = Vec<Result<DirEntry<Async>>>> + Send>>;
+type SortFuture = Pin<Box<dyn Future<Output = Vec<Candidate>> + Send>>;
 
 /// Orders the entries of one directory by an asynchronously computed key.
 ///
@@ -109,14 +113,10 @@ type SortFuture = Pin<Box<dyn Future<Output = Vec<Result<DirEntry<Async>>>> + Se
 /// need not be generic over the key type. `Sync` because the walker borrows it
 /// across an `await`.
 #[allow(clippy::type_complexity)]
-struct Sorter(Box<dyn Fn(Vec<Result<DirEntry<Async>>>, Order) -> SortFuture + Send + Sync>);
+struct Sorter(Box<dyn Fn(Vec<Candidate>, Order) -> SortFuture + Send + Sync>);
 
 impl Sorter {
-    async fn sort(
-        &self,
-        entries: Vec<Result<DirEntry<Async>>>,
-        order: Order,
-    ) -> Vec<Result<DirEntry<Async>>> {
+    async fn sort(&self, entries: Vec<Candidate>, order: Order) -> Vec<Candidate> {
         (self.0)(entries, order).await
     }
 }
@@ -125,6 +125,75 @@ impl fmt::Debug for Sorter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Sorter")
     }
+}
+
+/// What [`AsyncWalkDir::filter_entry`] decides about one entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filtering {
+    /// Yield the entry, and descend into it if it is a directory.
+    Continue,
+    /// Do not yield the entry, but still descend into it if it is a directory.
+    IgnoreEntry,
+    /// Do not yield the entry, and do not descend into it.
+    IgnoreDir,
+}
+
+type FilterFuture = Pin<Box<dyn Future<Output = Filtering> + Send>>;
+
+/// Decides each entry's fate before the walker can descend into it.
+///
+/// `Sync` because the walker shares one filter across the tasks resolving a
+/// directory.
+#[allow(clippy::type_complexity)]
+struct Filter(Box<dyn Fn(Arc<DirEntry<Async>>) -> FilterFuture + Send + Sync>);
+
+impl Filter {
+    /// Returns the verdict and the entry, which the predicate saw through an
+    /// [`Arc`] so it could hold it across an `await`.
+    async fn decide(&self, entry: Arc<DirEntry<Async>>) -> (Filtering, DirEntry<Async>) {
+        let verdict = (self.0)(Arc::clone(&entry)).await;
+        (verdict, Arc::unwrap_or_clone(entry))
+    }
+}
+
+impl fmt::Debug for Filter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Filter")
+    }
+}
+
+/// A resolved child together with whether the walk yields it.
+struct Candidate {
+    /// `false` for [`Filtering::IgnoreEntry`] on a directory: descended into,
+    /// as an entry above `min_depth` is, but never yielded.
+    yielded: bool,
+    entry: Result<DirEntry<Async>>,
+}
+
+impl Candidate {
+    fn kept(entry: Result<DirEntry<Async>>) -> Self {
+        Self {
+            yielded: true,
+            entry,
+        }
+    }
+
+    fn descend_only(entry: Result<DirEntry<Async>>) -> Self {
+        Self {
+            yielded: false,
+            entry,
+        }
+    }
+}
+
+/// Everything resolving one directory's children needs.
+#[derive(Debug, Clone)]
+struct ResolveOpts {
+    depth: usize,
+    follow_links: bool,
+    skip_hidden: bool,
+    concurrency: usize,
+    filter: Option<Arc<Filter>>,
 }
 
 /// Applies `task` to every item, at most `concurrency` in flight at once.
@@ -210,27 +279,70 @@ async fn read_raw(path: &Path, depth: usize) -> Result<Vec<Raw>> {
     Ok(raw)
 }
 
+/// Whether resolving one entry does I/O worth overlapping.
+///
+/// On Unix it does not unless a symlink must be followed: `d_type` and `d_ino`
+/// answer everything `from_std` needs, and `is_hidden` is a name check, so a
+/// task per entry would buy nothing and cost a spawn. On Windows every entry
+/// needs its own metadata for `file_attributes`, so it always does.
+#[cfg(unix)]
+fn resolve_does_io(follow_links: bool, has_filter: bool) -> bool {
+    follow_links || has_filter
+}
+#[cfg(windows)]
+fn resolve_does_io(_follow_links: bool, _has_filter: bool) -> bool {
+    true
+}
+
 /// Turns raw children into entries, at most `concurrency` at once, and drops
 /// hidden entries when asked.
 ///
 /// Both per-entry `stat`s live here — file type without `d_type`, and the
 /// hidden flag on Windows — so a directory's overlap.
-async fn resolve(
-    raw: Vec<Raw>,
-    depth: usize,
-    follow_links: bool,
-    skip_hidden: bool,
-    concurrency: usize,
-) -> Vec<Result<DirEntry<Async>>> {
-    let resolved = map_bounded(raw, concurrency, move |raw| async move {
-        match raw {
-            Raw::Failed(err) => Some(Err(err)),
-            Raw::Entry(raw) => match DirEntry::<Async>::from_std(&raw, depth, follow_links).await {
-                // Dropped here, not in the walker loop, so a hidden
-                // directory is never descended into.
-                Ok(entry) if skip_hidden && entry.is_hidden().await => None,
-                resolved => Some(resolved),
-            },
+async fn resolve(raw: Vec<Raw>, opts: &ResolveOpts) -> Vec<Candidate> {
+    // Sequential where there is no I/O to overlap; `map_bounded` treats 1 as
+    // its fast path.
+    let concurrency = if resolve_does_io(opts.follow_links, opts.filter.is_some()) {
+        opts.concurrency
+    } else {
+        1
+    };
+    let ResolveOpts {
+        depth,
+        follow_links,
+        skip_hidden,
+        ..
+    } = *opts;
+    let filter = opts.filter.clone();
+
+    let resolved = map_bounded(raw, concurrency, move |raw| {
+        let filter = filter.clone();
+        async move {
+            let raw = match raw {
+                // A child that never resolved cannot be filtered, so it is
+                // always reported.
+                Raw::Failed(err) => return Some(Candidate::kept(Err(err))),
+                Raw::Entry(raw) => raw,
+            };
+            let entry = match DirEntry::<Async>::from_std(&raw, depth, follow_links).await {
+                Ok(entry) => entry,
+                Err(err) => return Some(Candidate::kept(Err(err))),
+            };
+            // Dropped here, not in the walker loop, so a hidden directory is
+            // never descended into.
+            if skip_hidden && entry.is_hidden().await {
+                return None;
+            }
+            let Some(filter) = filter else {
+                return Some(Candidate::kept(Ok(entry)));
+            };
+            match filter.decide(Arc::new(entry)).await {
+                (Filtering::Continue, entry) => Some(Candidate::kept(Ok(entry))),
+                (Filtering::IgnoreEntry, entry) if entry.is_dir() => {
+                    Some(Candidate::descend_only(Ok(entry)))
+                }
+                (Filtering::IgnoreEntry | Filtering::IgnoreDir, _) => None,
+            }
         }
     })
     .await;
@@ -246,9 +358,9 @@ async fn resolve(
 /// copy.
 async fn sort_by_key<K, Fut, F>(
     key: Arc<F>,
-    entries: Vec<Result<DirEntry<Async>>>,
+    entries: Vec<Candidate>,
     order: Order,
-) -> Vec<Result<DirEntry<Async>>>
+) -> Vec<Candidate>
 where
     F: Fn(Arc<DirEntry<Async>>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = K> + Send + 'static,
@@ -256,8 +368,11 @@ where
 {
     let pending: Vec<Pending> = entries
         .into_iter()
-        .map(|entry| match entry {
-            Ok(entry) => Pending::Keyed(Arc::new(entry)),
+        .map(|candidate| match candidate.entry {
+            Ok(entry) => Pending::Keyed {
+                entry: Arc::new(entry),
+                yielded: candidate.yielded,
+            },
             Err(err) => Pending::Failed(err),
         })
         .collect();
@@ -265,7 +380,7 @@ where
     let keyed: Vec<Arc<DirEntry<Async>>> = pending
         .iter()
         .filter_map(|pending| match pending {
-            Pending::Keyed(entry) => Some(Arc::clone(entry)),
+            Pending::Keyed { entry, .. } => Some(Arc::clone(entry)),
             Pending::Failed(_) => None,
         })
         .collect();
@@ -285,16 +400,19 @@ where
                 grouped: order.group_dir,
                 key: None,
                 name: error_name(&err),
-                entry: Err(err),
+                entry: Candidate::kept(Err(err)),
             },
-            Pending::Keyed(shared) => {
+            Pending::Keyed { entry, yielded } => {
                 let key = keys.next().expect("one key per keyed entry");
-                let entry = Arc::unwrap_or_clone(shared);
+                let entry = Arc::unwrap_or_clone(entry);
                 Ordered {
                     grouped: order.grouped_entry(&entry),
                     key: Some(key),
                     name: entry.file_name().to_owned(),
-                    entry: Ok(entry),
+                    entry: Candidate {
+                        yielded,
+                        entry: Ok(entry),
+                    },
                 }
             }
         })
@@ -307,8 +425,9 @@ where
 
 /// Orders `entries` for [`group_dir`](AsyncWalkDir::group_dir) without a key:
 /// the same order minus the key.
-fn sort_grouped(entries: &mut [Result<DirEntry<Async>>], order: Order) {
-    entries.sort_by_cached_key(|entry| {
+fn sort_grouped(entries: &mut [Candidate], order: Order) {
+    entries.sort_by_cached_key(|candidate| {
+        let entry = &candidate.entry;
         // `false` first, so a failed entry leads as it does with a key.
         (order.grouped(entry), entry.is_ok(), order_name(entry))
     });
@@ -317,16 +436,13 @@ fn sort_grouped(entries: &mut [Result<DirEntry<Async>>], order: Order) {
 // Stack item: pre-ordered entries (sort_by or group_dir set), or a live
 // ReadDir handle, which never materialises the directory.
 enum DirStream {
-    Sorted(vec::IntoIter<Result<DirEntry<Async>>>),
+    Sorted(vec::IntoIter<Candidate>),
     Live {
         rd: Box<fs::ReadDir>,
         path: PathBuf,
-        depth: usize,
-        follow_links: bool,
-        skip_hidden: bool,
-        concurrency: usize,
+        opts: ResolveOpts,
         // Resolved, not yet yielded; at most `concurrency` entries.
-        ready: vec::IntoIter<Result<DirEntry<Async>>>,
+        ready: vec::IntoIter<Candidate>,
     },
 }
 
@@ -334,40 +450,41 @@ impl fmt::Debug for DirStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DirStream::Sorted(_) => f.write_str("Sorted(..)"),
-            DirStream::Live { path, depth, .. } => f
+            DirStream::Live { path, opts, .. } => f
                 .debug_struct("Live")
                 .field("path", path)
-                .field("depth", depth)
+                .field("depth", &opts.depth)
                 .finish_non_exhaustive(),
         }
     }
 }
 
 impl DirStream {
-    async fn next_entry(&mut self) -> Option<Result<DirEntry<Async>>> {
+    async fn next_entry(&mut self) -> Option<Candidate> {
         match self {
             DirStream::Sorted(iter) => iter.next(),
             DirStream::Live {
                 rd,
                 path,
-                depth,
-                follow_links,
-                skip_hidden,
-                concurrency,
+                opts,
                 ready,
             } => loop {
-                if let Some(entry) = ready.next() {
-                    return Some(entry);
+                if let Some(candidate) = ready.next() {
+                    return Some(candidate);
                 }
 
                 // Refill one batch, so its per-entry I/O overlaps.
-                let mut raw = Vec::with_capacity(*concurrency);
-                while raw.len() < *concurrency {
+                let mut raw = Vec::with_capacity(opts.concurrency);
+                while raw.len() < opts.concurrency {
                     match rd.next_entry().await {
                         Ok(Some(entry)) => raw.push(Raw::Entry(entry)),
                         Ok(None) => break,
                         Err(err) => {
-                            raw.push(Raw::Failed(Error::new_io_error(path.clone(), *depth, err)));
+                            raw.push(Raw::Failed(Error::new_io_error(
+                                path.clone(),
+                                opts.depth,
+                                err,
+                            )));
                             break;
                         }
                     }
@@ -377,10 +494,9 @@ impl DirStream {
                     return None;
                 }
 
-                *ready = resolve(raw, *depth, *follow_links, *skip_hidden, *concurrency)
-                    .await
-                    .into_iter();
-                // `skip_hidden` can empty a whole batch, hence the loop.
+                *ready = resolve(raw, opts).await.into_iter();
+                // `skip_hidden` and the filter can empty a whole batch, hence
+                // the loop.
             },
         }
     }
@@ -393,6 +509,7 @@ pub struct AsyncWalkDir {
     opts: WalkDirOptions,
     async_opts: AsyncOptions,
     sort_by: Option<Sorter>,
+    filter: Option<Arc<Filter>>,
 }
 
 impl AsyncWalkDir {
@@ -403,6 +520,7 @@ impl AsyncWalkDir {
             opts: WalkDirOptions::default(),
             async_opts: AsyncOptions::default(),
             sort_by: None,
+            filter: None,
         }
     }
 
@@ -440,7 +558,12 @@ impl AsyncWalkDir {
 
     /// Sets how many entries of one directory may have I/O in flight at once.
     ///
-    /// Defaults to 32, clamped to at least 1. Never affects order.
+    /// Defaults to 32, clamped to at least 1. Bounds the
+    /// [`sort_by`](Self::sort_by) key and the
+    /// [`filter_entry`](Self::filter_entry) predicate. Never affects order.
+    ///
+    /// Ignored where resolving an entry does no I/O to overlap — on Unix, a
+    /// walk with no key, no predicate and `follow_links` off.
     pub fn concurrency(mut self, n: usize) -> Self {
         self.async_opts.concurrency = n.max(1);
         self
@@ -466,6 +589,51 @@ impl AsyncWalkDir {
         self
     }
 
+    /// Sets the predicate that decides each entry's fate before descent.
+    ///
+    /// Applied where [`skip_hidden`](Self::skip_hidden) is, so
+    /// [`Filtering::IgnoreDir`] prunes a subtree without reading it. The
+    /// predicate may await [`metadata`](DirEntry::metadata) and is bounded by
+    /// [`concurrency`](Self::concurrency). The traversal root is exempt, and an
+    /// entry that failed to resolve is reported without consulting the
+    /// predicate. The last call wins.
+    ///
+    /// To drop entries from the output without affecting descent, prefer
+    /// `StreamExt::filter` on the walker.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn run() -> walkthrough::Result<()> {
+    /// use walkthrough::r#async::{AsyncWalkDir, Filtering};
+    ///
+    /// let mut walker = AsyncWalkDir::new(".")
+    ///     .filter_entry(|entry| async move {
+    ///         if entry.file_name() == "target" {
+    ///             Filtering::IgnoreDir
+    ///         } else {
+    ///             Filtering::Continue
+    ///         }
+    ///     })
+    ///     .walker();
+    ///
+    /// while let Some(entry) = walker.next_entry().await {
+    ///     println!("{:?}", entry?.path());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn filter_entry<Fut, F>(mut self, predicate: F) -> Self
+    where
+        F: Fn(Arc<DirEntry<Async>>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Filtering> + Send + 'static,
+    {
+        self.filter = Some(Arc::new(Filter(Box::new(move |entry| {
+            Box::pin(predicate(entry))
+        }))));
+        self
+    }
+
     /// Sets the key used to order the entries within each directory.
     ///
     /// Each key is awaited once before ordering,
@@ -486,10 +654,9 @@ impl AsyncWalkDir {
     ///         let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
     ///         (!entry.is_dir(), size, entry.file_name().to_owned())
     ///     })
-    ///     .walker()
-    ///     .await;
+    ///     .walker();
     ///
-    /// while let Some(entry) = walker.next().await {
+    /// while let Some(entry) = walker.next_entry().await {
     ///     println!("{:?}", entry?.path());
     /// }
     /// # Ok(())
@@ -509,27 +676,85 @@ impl AsyncWalkDir {
     }
 
     /// Returns an async walker.
-    pub async fn walker(self) -> AsyncWalker {
-        let start = DirEntry::<Async>::from_path(self.root, 0, self.opts.follow_links).await;
+    ///
+    /// The root is resolved on the first entry, so an unreadable root arrives
+    /// as the first [`Err`] rather than failing here.
+    pub fn walker(self) -> AsyncWalker {
+        let opts = self.opts;
+        let async_opts = self.async_opts;
         AsyncWalker {
-            start: Some(start),
-            stack: vec![],
-            ancestors: vec![],
-            opts: self.opts,
-            async_opts: self.async_opts,
-            sort_by: self.sort_by,
-            yielded: 0,
-            skipped: 0,
+            opts,
+            async_opts,
+            stream: Box::pin(async_stream::stream! {
+                let start =
+                    DirEntry::<Async>::from_path(self.root, 0, self.opts.follow_links).await;
+                let mut state = WalkerState {
+                    start: Some(start),
+                    stack: vec![],
+                    ancestors: vec![],
+                    opts: self.opts,
+                    async_opts: self.async_opts,
+                    sort_by: self.sort_by,
+                    filter: self.filter,
+                    yielded: 0,
+                    skipped: 0,
+                };
+                while let Some(entry) = state.next_entry().await {
+                    yield entry;
+                }
+            }),
         }
     }
 }
 
 /// Async stateful walker produced by [`AsyncWalkDir::walker`].
-#[derive(Debug)]
+///
+/// Implements [`futures_core::Stream`], so the combinators of
+/// `futures::StreamExt` or `tokio_stream::StreamExt` — `skip`, `take`,
+/// `filter`, `map` — apply directly.
 pub struct AsyncWalker {
     opts: WalkDirOptions,
     async_opts: AsyncOptions,
+    stream: Pin<Box<dyn futures_core::Stream<Item = Result<DirEntry<Async>>> + Send>>,
+}
+
+impl fmt::Debug for AsyncWalker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AsyncWalker")
+            .field("opts", &self.opts)
+            .field("async_opts", &self.async_opts)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AsyncWalker {
+    /// Returns the next entry.
+    ///
+    /// Named as tokio's `ReadDir::next_entry` is, so it does not shadow
+    /// `StreamExt::next` for a caller who has that trait in scope.
+    ///
+    /// With [`limit`](AsyncWalkDir::limit) or [`offset`](AsyncWalkDir::offset)
+    /// set, this is `skip(offset).take(limit)` over the unpaginated walk.
+    pub async fn next_entry(&mut self) -> Option<Result<DirEntry<Async>>> {
+        std::future::poll_fn(|cx| self.stream.as_mut().poll_next(cx)).await
+    }
+}
+
+impl futures_core::Stream for AsyncWalker {
+    type Item = Result<DirEntry<Async>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().stream.as_mut().poll_next(cx)
+    }
+}
+
+/// The traversal state that [`AsyncWalker`]'s stream owns and drives.
+#[derive(Debug)]
+struct WalkerState {
+    opts: WalkDirOptions,
+    async_opts: AsyncOptions,
     sort_by: Option<Sorter>,
+    filter: Option<Arc<Filter>>,
     ancestors: Vec<crate::Ancestor>,
     stack: Vec<DirStream>,
     start: Option<Result<DirEntry<Async>>>,
@@ -537,7 +762,7 @@ pub struct AsyncWalker {
     skipped: usize,
 }
 
-impl AsyncWalker {
+impl WalkerState {
     fn order(&self) -> Order {
         Order {
             group_dir: self.opts.group_dir,
@@ -565,8 +790,16 @@ impl AsyncWalker {
         let child_depth = depth + 1;
         let follow_links = self.opts.follow_links;
 
+        let resolve_opts = ResolveOpts {
+            depth: child_depth,
+            follow_links,
+            skip_hidden: self.opts.skip_hidden,
+            concurrency: self.async_opts.concurrency,
+            filter: self.filter.clone(),
+        };
+
         if self.sort_by.is_some() || self.opts.group_dir {
-            let entries = self.collect_ordered(&path, child_depth).await?;
+            let entries = self.collect_ordered(&path, &resolve_opts).await?;
             self.stack.push(DirStream::Sorted(entries.into_iter()));
         } else {
             let rd = fs::read_dir(&path)
@@ -575,10 +808,7 @@ impl AsyncWalker {
             self.stack.push(DirStream::Live {
                 rd: Box::new(rd),
                 path,
-                depth: child_depth,
-                follow_links,
-                skip_hidden: self.opts.skip_hidden,
-                concurrency: self.async_opts.concurrency,
+                opts: resolve_opts,
                 ready: Vec::new().into_iter(),
             });
         }
@@ -588,18 +818,11 @@ impl AsyncWalker {
     async fn collect_ordered(
         &self,
         path: &Path,
-        depth: usize,
-    ) -> Result<Vec<Result<DirEntry<Async>>>> {
+        resolve_opts: &ResolveOpts,
+    ) -> Result<Vec<Candidate>> {
         let order = self.order();
-        let raw = read_raw(path, depth).await?;
-        let mut entries = resolve(
-            raw,
-            depth,
-            self.opts.follow_links,
-            self.opts.skip_hidden,
-            order.concurrency,
-        )
-        .await;
+        let raw = read_raw(path, resolve_opts.depth).await?;
+        let mut entries = resolve(raw, resolve_opts).await;
 
         match self.sort_by {
             Some(ref sorter) => entries = sorter.sort(entries, order).await,
@@ -609,21 +832,8 @@ impl AsyncWalker {
         Ok(entries)
     }
 
-    /// Converts this walker into a [`futures_core::Stream`].
-    pub fn into_stream(self) -> impl futures_core::Stream<Item = Result<DirEntry<Async>>> {
-        async_stream::stream! {
-            let mut walker = self;
-            while let Some(entry) = walker.next().await {
-                yield entry;
-            }
-        }
-    }
-
-    /// Returns the next entry.
-    ///
-    /// With [`limit`](AsyncWalkDir::limit) or [`offset`](AsyncWalkDir::offset)
-    /// set, this is `skip(offset).take(limit)` over the unpaginated walk.
-    pub async fn next(&mut self) -> Option<Result<DirEntry<Async>>> {
+    /// The paginated traversal: `skip(offset).take(limit)`.
+    async fn next_entry(&mut self) -> Option<Result<DirEntry<Async>>> {
         loop {
             if self.yielded >= self.async_opts.limit {
                 return None;
@@ -660,10 +870,10 @@ impl AsyncWalker {
         }
 
         loop {
-            let res = {
+            let candidate = {
                 let stream = self.stack.last_mut()?;
                 match stream.next_entry().await {
-                    Some(res) => res,
+                    Some(candidate) => candidate,
                     None => {
                         self.stack.pop();
                         continue;
@@ -671,9 +881,10 @@ impl AsyncWalker {
                 }
             };
 
-            // `skip_hidden` is applied during resolve; nothing hidden reaches
-            // here.
-            let entry = match res {
+            // `skip_hidden` and `IgnoreDir` are applied during resolve; neither
+            // reaches here.
+            let Candidate { yielded, entry } = candidate;
+            let entry = match entry {
                 Err(err) => return Some(Err(err)),
                 Ok(e) => e,
             };
@@ -685,7 +896,7 @@ impl AsyncWalker {
                 return Some(Err(err));
             }
 
-            if entry.depth() >= self.opts.min_depth {
+            if yielded && entry.depth() >= self.opts.min_depth {
                 return Some(Ok(entry));
             }
         }

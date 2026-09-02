@@ -125,9 +125,9 @@ fn dangling_symlink_tree() -> Option<TempDir> {
 // ---------------------------------------------------------------------------
 
 async fn walk_all(walk: AsyncWalkDir) -> Vec<Result<DirEntry<Async>>> {
-    let mut walker: AsyncWalker = walk.walker().await;
+    let mut walker: AsyncWalker = walk.walker();
     let mut out = Vec::new();
-    while let Some(res) = walker.next().await {
+    while let Some(res) = walker.next_entry().await {
         out.push(res);
     }
     out
@@ -774,7 +774,7 @@ async fn test_async_metadata_error_after_file_removed() {
 }
 
 // ---------------------------------------------------------------------------
-// Debug format — covers AsyncWalker::fmt and DirStream::fmt
+// Debug format — covers AsyncWalkDir::fmt and AsyncWalker::fmt
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -786,18 +786,18 @@ async fn test_async_walkdir_debug_with_sort_by_contains_sorter() {
 #[tokio::test]
 async fn test_async_walker_debug_does_not_panic() {
     let tmp = basic_tree();
-    let walker = AsyncWalkDir::new(tmp.path()).walker().await;
+    let walker = AsyncWalkDir::new(tmp.path()).walker();
     let _ = format!("{walker:?}");
 }
 
 #[tokio::test]
-async fn test_async_walker_debug_with_live_stream_does_not_panic() {
-    // After calling next() once the stack holds a DirStream::Live item; its
-    // Debug impl must not panic.
+async fn test_async_walker_debug_after_first_entry_does_not_panic() {
+    // The walker owns a boxed stream, so its Debug reports the options rather
+    // than the traversal stack; it must stay printable mid-walk.
     let tmp = basic_tree();
-    let mut walker = AsyncWalkDir::new(tmp.path()).walker().await;
-    let _ = walker.next().await; // root → pushes a Live stream onto the stack
-    let _ = format!("{walker:?}");
+    let mut walker = AsyncWalkDir::new(tmp.path()).walker();
+    let _ = walker.next_entry().await;
+    assert!(format!("{walker:?}").contains("AsyncWalker"));
 }
 
 // ---------------------------------------------------------------------------

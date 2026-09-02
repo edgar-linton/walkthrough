@@ -87,11 +87,10 @@ async fn walk_sorted(root: &Path, concurrency: usize, group_dir: bool) -> Vec<Pa
         .sort_by(|entry: Arc<AsyncDirEntry>| async move {
             entry.metadata().await.map(|m| m.len()).unwrap_or(0)
         })
-        .walker()
-        .await;
+        .walker();
 
     let mut out = Vec::new();
-    while let Some(entry) = walker.next().await {
+    while let Some(entry) = walker.next_entry().await {
         out.push(
             entry
                 .expect("fixture tree should not produce walk errors")
@@ -143,10 +142,9 @@ async fn test_order_is_identical_at_every_concurrency_for_the_streaming_path() {
         let mut walker = AsyncWalkDir::new(root)
             .concurrency(concurrency)
             .skip_hidden(true)
-            .walker()
-            .await;
+            .walker();
         let mut out = Vec::new();
-        while let Some(entry) = walker.next().await {
+        while let Some(entry) = walker.next_entry().await {
             out.push(entry.unwrap().into_path());
         }
         out
@@ -206,13 +204,12 @@ async fn test_key_is_awaited_exactly_once_per_entry() {
                 entry.metadata().await.map(|m| m.len()).unwrap_or(0)
             }
         })
-        .walker()
-        .await;
+        .walker();
 
     // The root is yielded without a key being computed for it, so the key runs
     // once per entry below it.
     let mut entries = 0;
-    while let Some(entry) = walker.next().await {
+    while let Some(entry) = walker.next_entry().await {
         entry.unwrap();
         entries += 1;
     }
@@ -236,10 +233,9 @@ async fn test_skip_hidden_applies_on_the_concurrent_path() {
         .concurrency(16)
         .skip_hidden(true)
         .sort_by(|entry: Arc<AsyncDirEntry>| async move { entry.file_name().to_owned() })
-        .walker()
-        .await;
+        .walker();
 
-    while let Some(entry) = walker.next().await {
+    while let Some(entry) = walker.next_entry().await {
         let entry = entry.unwrap();
         assert_ne!(
             entry.file_name(),

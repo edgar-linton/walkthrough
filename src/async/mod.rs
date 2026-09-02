@@ -9,12 +9,9 @@
 //! # async fn run() -> walkthrough::Result<()> {
 //! use walkthrough::r#async::AsyncWalkDir;
 //!
-//! let mut walker = AsyncWalkDir::new("./my_project")
-//!     .max_depth(5)
-//!     .walker()
-//!     .await;
+//! let mut walker = AsyncWalkDir::new("./my_project").max_depth(5).walker();
 //!
-//! while let Some(entry) = walker.next().await {
+//! while let Some(entry) = walker.next_entry().await {
 //!     println!("{}", entry?.path().display());
 //! }
 //! # Ok(())
@@ -28,7 +25,7 @@ mod windows;
 
 use std::fs;
 
-pub use state::{Async, AsyncWalkDir, AsyncWalker};
+pub use state::{Async, AsyncWalkDir, AsyncWalker, Filtering};
 
 /// Type alias for [`DirEntry<Async>`](crate::DirEntry).
 pub type AsyncDirEntry = crate::DirEntry<Async>;

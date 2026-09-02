@@ -84,9 +84,9 @@ fn builder(root: &Path, combination: &str) -> AsyncWalkDir {
 }
 
 async fn collect(walk: AsyncWalkDir) -> Vec<PathBuf> {
-    let mut walker = walk.walker().await;
+    let mut walker = walk.walker();
     let mut out = Vec::new();
-    while let Some(entry) = walker.next().await {
+    while let Some(entry) = walker.next_entry().await {
         out.push(
             entry
                 .expect("fixture tree should not produce walk errors")
@@ -157,18 +157,15 @@ async fn test_offset_past_the_end_yields_nothing_and_is_not_an_error() {
     let tmp = tree();
     let all = collect(builder(tmp.path(), "name")).await;
 
-    let mut walker = builder(tmp.path(), "name")
-        .offset(all.len() + 100)
-        .walker()
-        .await;
-    assert!(walker.next().await.is_none());
+    let mut walker = builder(tmp.path(), "name").offset(all.len() + 100).walker();
+    assert!(walker.next_entry().await.is_none());
 }
 
 #[tokio::test]
 async fn test_limit_zero_yields_nothing() {
     let tmp = tree();
-    let mut walker = builder(tmp.path(), "name").limit(0).walker().await;
-    assert!(walker.next().await.is_none());
+    let mut walker = builder(tmp.path(), "name").limit(0).walker();
+    assert!(walker.next_entry().await.is_none());
 }
 
 #[tokio::test]

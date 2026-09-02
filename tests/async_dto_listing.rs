@@ -81,11 +81,10 @@ async fn list_dir(root: &Path, extension: Option<&str>) -> Vec<DirEntryDto> {
             let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
             (!entry.is_dir(), size, entry.file_name().to_owned())
         })
-        .walker()
-        .await;
+        .walker();
 
     let mut out = Vec::new();
-    while let Some(res) = walker.next().await {
+    while let Some(res) = walker.next_entry().await {
         let entry = res.expect("fixture tree should not produce walk errors");
         if let Some(ext) = extension
             && !entry.is_dir()
@@ -196,11 +195,10 @@ async fn test_flat_sort_after_collect_does_not_need_an_async_key() {
     let mut walker = AsyncWalkDir::new(dir.path())
         .skip_hidden(true)
         .min_depth(1)
-        .walker()
-        .await;
+        .walker();
 
     let mut dtos = Vec::new();
-    while let Some(res) = walker.next().await {
+    while let Some(res) = walker.next_entry().await {
         let entry = res.unwrap();
         dtos.push(DirEntryDto::from_entry(&entry).await);
     }

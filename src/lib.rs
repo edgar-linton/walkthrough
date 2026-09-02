@@ -40,4 +40,4 @@ pub(crate) use entry::Ancestor;
 pub use entry::DirEntry;
 pub use error::{Error, ErrorKind, Result};
 pub use iter::WalkDir;
-pub use sync::{Sync, Walker};
+pub use sync::{Blocking, Walker};

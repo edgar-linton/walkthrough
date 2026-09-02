@@ -27,7 +27,7 @@ impl std::fmt::Debug for Sorter {
 }
 
 // Shared by both walkers; sorting is not.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct WalkDirOptions {
     pub(crate) min_depth: usize,
     pub(crate) max_depth: usize,

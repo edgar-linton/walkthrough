@@ -30,7 +30,7 @@ Enable the `async` feature in `Cargo.toml`:
 walkthrough = { version = "0.4", features = ["async"] }
 ```
 
-Then drive the walker manually with `.next().await`:
+Then drive the walker manually with `.next_entry().await`:
 
 ```rust
 use walkthrough::r#async::AsyncWalkDir;
@@ -39,16 +39,33 @@ let mut walker = AsyncWalkDir::new("./my_project")
     .min_depth(1)
     .max_depth(5)
     .skip_hidden(true)
-    .walker()
-    .await;
+    .walker();
 
-while let Some(entry) = walker.next().await {
+while let Some(entry) = walker.next_entry().await {
     match entry {
         Ok(e)  => println!("{}", e.path().display()),
         Err(e) => eprintln!("error: {e}"),
     }
 }
 ```
+
+`AsyncWalker` also implements `futures_core::Stream`, so the combinators of
+`futures::StreamExt` or `tokio_stream::StreamExt` apply to it directly:
+
+```rust
+use futures::StreamExt;
+use walkthrough::r#async::AsyncWalkDir;
+
+let paths: Vec<_> = AsyncWalkDir::new("./my_project")
+    .walker()
+    .filter_map(|entry| async move { entry.ok() })
+    .map(|entry| entry.into_path())
+    .collect()
+    .await;
+```
+
+`walker()` does no I/O, so an unreadable root arrives as the first `Err` rather than
+failing at construction.
 
 ## Configuration
 
@@ -71,6 +88,7 @@ the other.
 | Method             | Default   | Description                                            |
 | ------------------ | --------- | ------------------------------------------------------ |
 | `concurrency(n)`   | `32`      | Entries of one directory resolved at once              |
+| `filter_entry(fn)` | none      | Decide each entry's fate before descending into it     |
 | `limit(n)`         | unlimited | Yield at most `n` entries, then end the walk           |
 | `offset(n)`        | `0`       | Skip the first `n` entries the walk would yield        |
 
@@ -100,8 +118,7 @@ let walker = AsyncWalkDir::new(".")
         let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
         (!entry.is_dir(), size, entry.file_name().to_owned())
     })
-    .walker()
-    .await;
+    .walker();
 ```
 
 The entry arrives as an `Arc`, so the key may hold it across an `await`, and metadata
@@ -126,9 +143,33 @@ let walker = AsyncWalkDir::new("/mnt/share")
     .max_depth(1)
     .concurrency(256)
     .sort_by(|entry| async move { entry.metadata().await.map(|m| m.len()).unwrap_or(0) })
-    .walker()
-    .await;
+    .walker();
 ```
+
+### Filtering
+
+`filter_entry` runs before the walker descends, so `Filtering::IgnoreDir` prunes a
+subtree without reading it. The predicate is async, so it may await `metadata`:
+
+```rust
+use std::sync::Arc;
+
+use walkthrough::r#async::{AsyncDirEntry, AsyncWalkDir, Filtering};
+
+let mut walker = AsyncWalkDir::new("./my_project")
+    .filter_entry(|entry: Arc<AsyncDirEntry>| async move {
+        if entry.file_name() == "target" {
+            Filtering::IgnoreDir
+        } else {
+            Filtering::Continue
+        }
+    })
+    .walker();
+```
+
+`Filtering::IgnoreEntry` drops the entry but still descends into it. To drop entries
+from the output without affecting descent at all, use `StreamExt::filter` instead —
+pruning the walk is the part a downstream combinator cannot express.
 
 ### Paging
 
@@ -143,8 +184,7 @@ let walker = AsyncWalkDir::new(root)
     .offset(200)
     .limit(100)
     .sort_by(|entry| async move { entry.metadata().await.map(|m| m.len()).unwrap_or(0) })
-    .walker()
-    .await;
+    .walker();
 ```
 
 They count yielded entries across the whole traversal, not per directory. A skipped
