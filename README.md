@@ -130,8 +130,6 @@ let walker = AsyncWalkDir::new("/mnt/share")
     .await;
 ```
 
-`examples/latency_probe.rs` measures a real directory; run it before tuning.
-
 ### Paging
 
 `limit` and `offset` are `skip(offset).take(limit)` over the walk the same builder

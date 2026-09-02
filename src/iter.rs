@@ -8,18 +8,7 @@ use crate::DirEntry;
 /// Orders two entries within a directory.
 ///
 /// [`DirEntry::metadata`] is cached, so reading it here costs one `stat` per
-/// entry, not one per comparison. The async walker takes a key instead; see
-#[cfg_attr(feature = "async", doc = "[`AsyncWalkDir::sort_by`].")]
-#[cfg_attr(not(feature = "async"), doc = "`AsyncWalkDir::sort_by`.")]
-///
-#[cfg_attr(
-    feature = "async",
-    doc = "[`AsyncWalkDir::sort_by`]: crate::async::AsyncWalkDir::sort_by"
-)]
-//
-// Links into the async half come in this pair: the target only exists with the
-// feature on, and a broken link is denied. The path is `crate::async`, not
-// `crate::r#async` — rustdoc reads the `#` as a URL fragment.
+/// entry, not one per comparison.
 #[allow(clippy::type_complexity)]
 pub(crate) struct Sorter(
     pub(crate) Box<dyn FnMut(&DirEntry, &DirEntry) -> Ordering + Send + 'static>,
@@ -37,8 +26,7 @@ impl std::fmt::Debug for Sorter {
     }
 }
 
-// Shared by both walkers. Sorting is not, since each builder owns its own
-// sorter type.
+// Shared by both walkers; sorting is not.
 #[derive(Debug)]
 pub(crate) struct WalkDirOptions {
     pub(crate) min_depth: usize,
@@ -104,8 +92,7 @@ impl WalkDir {
 
     /// Controls whether hidden entries are skipped.
     ///
-    /// A hidden directory is excluded from the walk, so its subtree is never
-    /// read. The root passed to [`new`](Self::new) is exempt.
+    /// A hidden directory's subtree is never read. The root is exempt.
     pub fn skip_hidden(mut self, yes: bool) -> Self {
         self.opts.skip_hidden = yes;
         self
@@ -113,23 +100,9 @@ impl WalkDir {
 
     /// Sets the comparator used to order the entries within each directory.
     ///
-    /// The comparator may read [`metadata`](DirEntry::metadata), which is
-    /// cached, so an ordering by size costs one `stat` per entry. Entries that
-    /// failed outright are placed first without reaching the comparator, and
-    /// [`group_dir`](Self::group_dir) is applied afterwards. The last call wins.
-    ///
-    /// The asynchronous counterpart takes a key, since a comparator cannot
-    /// await an
-    #[cfg_attr(feature = "async", doc = "[`AsyncDirEntry`]'s `metadata`; see")]
-    #[cfg_attr(not(feature = "async"), doc = "`AsyncDirEntry`'s `metadata`; see")]
-    #[cfg_attr(feature = "async", doc = "[`AsyncWalkDir::sort_by`].")]
-    #[cfg_attr(not(feature = "async"), doc = "`AsyncWalkDir::sort_by`.")]
-    ///
-    #[cfg_attr(
-        feature = "async",
-        doc = "[`AsyncDirEntry`]: crate::async::AsyncDirEntry",
-        doc = "[`AsyncWalkDir::sort_by`]: crate::async::AsyncWalkDir::sort_by"
-    )]
+    /// Failed entries sort first, without reaching the comparator.
+    /// [`group_dir`](Self::group_dir) applies afterwards.
+    /// [`metadata`](DirEntry::metadata) is cached. The last call wins.
     ///
     /// # Example
     ///

@@ -3,16 +3,13 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(test, deny(warnings))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-// Denied in every feature configuration, so a link into `async` from
-// always-compiled code needs the `cfg_attr` pair shown in `iter::Sorter`.
 #![deny(rustdoc::broken_intra_doc_links)]
 
 //! Recursive directory traversal.
 //!
 //! [`WalkDir`] walks synchronously. With the `async` feature,
-#![cfg_attr(feature = "async", doc = "[`r#async`](crate::async)")]
-#![cfg_attr(not(feature = "async"), doc = "`walkthrough::r#async`")]
-//! walks asynchronously, resolving each directory's entries concurrently.
+//! `walkthrough::r#async` walks asynchronously, resolving each directory's
+//! entries concurrently.
 //!
 //! Both offer min/max depth, symlink following, symlink-loop detection,
 //! hidden-file filtering, sorting, and directory grouping.
@@ -28,7 +25,6 @@
 //! }
 //! ```
 
-// Keeps the error to one line instead of a cascade of missing platform methods.
 #[cfg(not(any(unix, windows)))]
 compile_error!("walkthrough only supports Unix and Windows targets");
 
@@ -37,7 +33,6 @@ mod error;
 mod iter;
 mod sync;
 
-// Items inside inherit the module's `doc(cfg)` marker.
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub mod r#async;

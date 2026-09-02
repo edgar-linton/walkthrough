@@ -432,8 +432,7 @@ impl AsyncWalkDir {
 
     /// Controls whether hidden entries are skipped.
     ///
-    /// A hidden directory is excluded from the walk, so its subtree is never
-    /// read. The root passed to [`new`](Self::new) is exempt.
+    /// A hidden directory's subtree is never read. The root is exempt.
     pub fn skip_hidden(mut self, yes: bool) -> Self {
         self.opts.skip_hidden = yes;
         self
@@ -441,13 +440,7 @@ impl AsyncWalkDir {
 
     /// Sets how many entries of one directory may have I/O in flight at once.
     ///
-    /// Defaults to 32, clamped to at least 1. Bounds every per-entry resolve:
-    /// the [`sort_by`](Self::sort_by) key, the file type on a filesystem
-    /// without `d_type`, and the hidden flag on Windows. Never affects order.
-    ///
-    /// The win scales with per-entry latency: threefold on a local filesystem,
-    /// far more on a network mount, where 128–512 is reasonable.
-    /// `examples/latency_probe.rs` measures it. There is no unbounded setting.
+    /// Defaults to 32, clamped to at least 1. Never affects order.
     pub fn concurrency(mut self, n: usize) -> Self {
         self.async_opts.concurrency = n.max(1);
         self
@@ -455,10 +448,8 @@ impl AsyncWalkDir {
 
     /// Yields at most `limit` entries, then ends the walk.
     ///
-    /// Counted over the whole traversal, not per directory; reported errors
-    /// count as entries. `limit(0)` yields nothing. Descent stops once the
-    /// limit is met, but every entry of an opened directory is still resolved,
-    /// since ordering needs every key.
+    /// Counted over the whole traversal, not per directory. Reported errors
+    /// count as entries. `limit(0)` yields nothing.
     pub fn limit(mut self, limit: usize) -> Self {
         self.async_opts.limit = limit;
         self
@@ -468,12 +459,8 @@ impl AsyncWalkDir {
     ///
     /// With [`limit`](Self::limit) this is `skip(offset).take(limit)` over the
     /// unpaginated walk; a skipped directory is still descended into. An
-    /// `offset` past the end yields nothing.
-    ///
-    /// Requires a reproducible order — set [`sort_by`](Self::sort_by) or
-    /// [`group_dir`](Self::group_dir), since filesystem order is not stable
-    /// across two `read_dir` calls. Entries added or removed between requests
-    /// can still make a page skip or repeat one.
+    /// `offset` past the end yields nothing. Requires a reproducible order —
+    /// set [`sort_by`](Self::sort_by) or [`group_dir`](Self::group_dir).
     pub fn offset(mut self, offset: usize) -> Self {
         self.async_opts.offset = offset;
         self
@@ -481,24 +468,11 @@ impl AsyncWalkDir {
 
     /// Sets the key used to order the entries within each directory.
     ///
-    /// The key may await [`metadata`](DirEntry::metadata); a comparator cannot,
-    /// and blocking in one panics with "Cannot start a runtime from within a
-    /// runtime". Each key is awaited once before ordering,
-    /// [`concurrency`](Self::concurrency) at a time, so an ordering by size
-    /// costs one `stat` per entry rather than one per comparison.
-    ///
-    /// The entry arrives as an [`Arc`], so the key may hold it across an
-    /// `await`, and metadata it resolves stays cached on the yielded entry.
-    /// Tuple keys give compound orderings, [`Reverse`](std::cmp::Reverse)
-    /// descending order. The last call wins.
-    ///
-    /// The order is total, in precedence order:
+    /// Each key is awaited once before ordering,
+    /// [`concurrency`](Self::concurrency) at a time. The entry arrives as an
+    /// [`Arc`], so the key may hold it across an `await`. The order is total:
     /// [`group_dir`](Self::group_dir), then entries that failed outright, then
-    /// the key, then the file name — which is what
-    /// [`offset`](Self::offset) needs to be a stable position.
-    ///
-    /// The synchronous counterpart takes a comparator; see
-    /// [`WalkDir::sort_by`](crate::WalkDir::sort_by).
+    /// the key, then the file name. The last call wins.
     ///
     /// # Example
     ///
