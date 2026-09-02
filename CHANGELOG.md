@@ -97,10 +97,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   the point of descent: `ancestor` resolves on demand through the entry's
   metadata cache.
 
-- Ancestor bookkeeping is skipped when `follow_links` is off, removing another
-  `stat` per descended directory. A symlink loop is only reachable when links are
-  followed — a symlink is otherwise never descended into, and neither platform
-  permits a hardlinked directory — so the check could not fire.
+- On Unix, ancestor bookkeeping is skipped when `follow_links` is off, removing
+  another `stat` per descended directory. A symlink loop is only reachable when
+  links are followed there: a symlink is otherwise never descended into, and the
+  platform does not permit a hardlinked directory, so the check could not fire.
+  Windows keeps the bookkeeping either way, since a directory junction is a
+  reparse point the platform can report as a directory rather than as a link, so
+  a cycle through one is not provably unreachable.
 
 ## [0.3.0] - 2026-08-12
 

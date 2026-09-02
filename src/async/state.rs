@@ -22,6 +22,22 @@ pub struct Async;
 /// remaining cost is Tokio's blocking-pool dispatch rather than the syscall.
 const DEFAULT_CONCURRENCY: usize = 32;
 
+/// Whether a symlink loop is unreachable unless links are followed, and the
+/// walker may therefore skip its ancestor bookkeeping — one `stat` per
+/// descended directory — when [`AsyncWalkDir::follow_links`] is off.
+///
+/// True on Unix: a symlink is not descended into unless followed, and the
+/// platform does not permit a hardlinked directory, so no cycle is reachable.
+///
+/// False on Windows, where a directory junction is a reparse point the platform
+/// can report as a directory rather than as a link. A cycle through one is not
+/// provably unreachable with `follow_links` off, and a missed loop is an
+/// infinite walk — the wrong side to be wrong on to save one `stat`.
+#[cfg(unix)]
+const LOOPS_NEED_FOLLOW_LINKS: bool = true;
+#[cfg(windows)]
+const LOOPS_NEED_FOLLOW_LINKS: bool = false;
+
 /// Configuration that only the asynchronous walker has.
 ///
 /// Kept out of [`WalkDirOptions`] because the synchronous walker has nothing
@@ -658,11 +674,10 @@ impl AsyncWalker {
     async fn push_dir(&mut self, entry: &DirEntry<Async>) -> Result<()> {
         let depth = entry.depth();
 
-        // Resolving an ancestor costs one `stat` per directory, and a symlink
-        // loop is only reachable when links are followed: without that, a
-        // symlink is never descended into and the platform does not permit a
-        // hardlinked directory, so the check cannot fire.
-        if self.opts.follow_links {
+        // Resolving an ancestor costs one `stat` per directory, so it is worth
+        // skipping where it cannot fire — which is platform-dependent; see
+        // `LOOPS_NEED_FOLLOW_LINKS`.
+        if self.opts.follow_links || !LOOPS_NEED_FOLLOW_LINKS {
             self.ancestors.truncate(depth);
 
             if let Some(ancestor) = entry.ancestor().await {
