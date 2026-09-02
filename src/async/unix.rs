@@ -79,7 +79,13 @@ impl DirEntry<Async> {
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
         let mut ino = entry.ino();
         let metadata = OnceCell::new();
-        if file_type.is_dir() || file_type.is_symlink() && follow_link {
+        // Only a followed symlink needs resolving: for a real directory,
+        // `d_type` already gave the file type and `d_ino` its own inode, so the
+        // resolve would recompute two values we have and cost one `stat` per
+        // subdirectory — including for directories the walk never descends
+        // into. `ancestor` resolves on demand through the `OnceCell`, so a
+        // recursive walk performs the same number of resolves as before.
+        if file_type.is_symlink() && follow_link {
             let resolved = fs::metadata(&path)
                 .await
                 .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;

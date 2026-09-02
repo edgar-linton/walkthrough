@@ -1,6 +1,6 @@
 [package]
 name = "walkthrough"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Edgar Linton <150683481+edgar-linton@users.noreply.github.com>"]
 edition = "2024"
 description = "A Rust crate for recursive directory traversal."
@@ -15,7 +15,7 @@ async = ["dep:tokio", "dep:futures-core", "dep:async-stream"]
 
 [dependencies]
 thiserror = "2.0"
-tokio = { version = "1.52", features = ["fs"], optional = true }
+tokio = { version = "1.52", features = ["fs", "rt"], optional = true }
 futures-core = { version = "0.3", optional = true }
 async-stream = { version = "0.3", optional = true }
 

@@ -43,7 +43,10 @@ impl DirEntry<Async> {
             .await
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
         let mut file_type = raw.file_type();
-        let metadata = if file_type.is_dir() || file_type.is_symlink_dir() && follow_link {
+        // Only a followed symlink needs a fresh `metadata` call; for a real
+        // directory the `DirEntry`'s own metadata is served from the directory
+        // scan that produced it, at no extra syscall.
+        let metadata = if file_type.is_symlink_dir() && follow_link {
             let resolved = fs::metadata(&path)
                 .await
                 .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;

@@ -16,6 +16,12 @@
 //!   walking synchronously, or by an asynchronously computed key when walking
 //!   asynchronously, where metadata is only reachable through an `await`.
 //! * Detecting symbolic link loops to prevent infinite recursion.
+//! * Resolving a directory's entries concurrently when walking asynchronously,
+//!   so a directory's latency is the longest of its entries' rather than the
+//!   sum — which is the difference between milliseconds and seconds on a
+//!   network mount.
+//! * Paging an asynchronous walk with `limit` and `offset`, for a listing
+//!   endpoint that has to expose the same pair as the rest of its API.
 //!
 //! ## Example
 //!
