@@ -558,12 +558,7 @@ impl AsyncWalkDir {
 
     /// Sets how many entries of one directory may have I/O in flight at once.
     ///
-    /// Defaults to 32, clamped to at least 1. Bounds the
-    /// [`sort_by`](Self::sort_by) key and the
-    /// [`filter_entry`](Self::filter_entry) predicate. Never affects order.
-    ///
-    /// Ignored where resolving an entry does no I/O to overlap — on Unix, a
-    /// walk with no key, no predicate and `follow_links` off.
+    /// Defaults to 32, clamped to at least 1. Never affects order.
     pub fn concurrency(mut self, n: usize) -> Self {
         self.async_opts.concurrency = n.max(1);
         self
@@ -571,8 +566,8 @@ impl AsyncWalkDir {
 
     /// Yields at most `limit` entries, then ends the walk.
     ///
-    /// Counted over the whole traversal, not per directory. Reported errors
-    /// count as entries. `limit(0)` yields nothing.
+    /// Counted over the whole traversal, not per directory. Errors count as
+    /// entries. `limit(0)` yields nothing.
     pub fn limit(mut self, limit: usize) -> Self {
         self.async_opts.limit = limit;
         self
@@ -580,26 +575,19 @@ impl AsyncWalkDir {
 
     /// Skips the first `offset` entries the walk would yield.
     ///
-    /// With [`limit`](Self::limit) this is `skip(offset).take(limit)` over the
-    /// unpaginated walk; a skipped directory is still descended into. An
-    /// `offset` past the end yields nothing. Requires a reproducible order —
-    /// set [`sort_by`](Self::sort_by) or [`group_dir`](Self::group_dir).
+    /// A skipped directory is still descended into. An `offset` past the end
+    /// yields nothing. Requires a reproducible order — set
+    /// [`sort_by`](Self::sort_by) or [`group_dir`](Self::group_dir).
     pub fn offset(mut self, offset: usize) -> Self {
         self.async_opts.offset = offset;
         self
     }
 
-    /// Sets the predicate that decides each entry's fate before descent.
+    /// Sets the predicate deciding each entry's fate before descent.
     ///
-    /// Applied where [`skip_hidden`](Self::skip_hidden) is, so
-    /// [`Filtering::IgnoreDir`] prunes a subtree without reading it. The
-    /// predicate may await [`metadata`](DirEntry::metadata) and is bounded by
-    /// [`concurrency`](Self::concurrency). The traversal root is exempt, and an
-    /// entry that failed to resolve is reported without consulting the
-    /// predicate. The last call wins.
-    ///
-    /// To drop entries from the output without affecting descent, prefer
-    /// `StreamExt::filter` on the walker.
+    /// The predicate may await [`metadata`](DirEntry::metadata). The root is
+    /// exempt, an entry that failed to resolve is reported without consulting
+    /// it, and the last call wins.
     ///
     /// # Example
     ///
@@ -636,9 +624,7 @@ impl AsyncWalkDir {
 
     /// Sets the key used to order the entries within each directory.
     ///
-    /// Each key is awaited once before ordering,
-    /// [`concurrency`](Self::concurrency) at a time. The entry arrives as an
-    /// [`Arc`], so the key may hold it across an `await`. The order is total:
+    /// Each key is awaited once before ordering. The order is total:
     /// [`group_dir`](Self::group_dir), then entries that failed outright, then
     /// the key, then the file name. The last call wins.
     ///
@@ -677,8 +663,7 @@ impl AsyncWalkDir {
 
     /// Returns an async walker.
     ///
-    /// The root is resolved on the first entry, so an unreadable root arrives
-    /// as the first [`Err`] rather than failing here.
+    /// An unreadable root arrives as the walker's first [`Err`].
     pub fn walker(self) -> AsyncWalker {
         let opts = self.opts;
         let async_opts = self.async_opts;
@@ -708,10 +693,6 @@ impl AsyncWalkDir {
 }
 
 /// Async stateful walker produced by [`AsyncWalkDir::walker`].
-///
-/// Implements [`futures_core::Stream`], so the combinators of
-/// `futures::StreamExt` or `tokio_stream::StreamExt` — `skip`, `take`,
-/// `filter`, `map` — apply directly.
 pub struct AsyncWalker {
     opts: WalkDirOptions,
     async_opts: AsyncOptions,
@@ -729,12 +710,6 @@ impl fmt::Debug for AsyncWalker {
 
 impl AsyncWalker {
     /// Returns the next entry.
-    ///
-    /// Named as tokio's `ReadDir::next_entry` is, so it does not shadow
-    /// `StreamExt::next` for a caller who has that trait in scope.
-    ///
-    /// With [`limit`](AsyncWalkDir::limit) or [`offset`](AsyncWalkDir::offset)
-    /// set, this is `skip(offset).take(limit)` over the unpaginated walk.
     pub async fn next_entry(&mut self) -> Option<Result<DirEntry<Async>>> {
         std::future::poll_fn(|cx| self.stream.as_mut().poll_next(cx)).await
     }

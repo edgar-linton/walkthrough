@@ -101,8 +101,7 @@ impl WalkDir {
     /// Sets the comparator used to order the entries within each directory.
     ///
     /// Failed entries sort first, without reaching the comparator.
-    /// [`group_dir`](Self::group_dir) applies afterwards.
-    /// [`metadata`](DirEntry::metadata) is cached. The last call wins.
+    /// [`group_dir`](Self::group_dir) applies afterwards. The last call wins.
     ///
     /// # Example
     ///

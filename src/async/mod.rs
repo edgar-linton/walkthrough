@@ -1,10 +1,5 @@
 //! Asynchronous traversal.
 //!
-//! [`AsyncWalkDir`] adds [`concurrency`](AsyncWalkDir::concurrency),
-//! [`limit`](AsyncWalkDir::limit) and [`offset`](AsyncWalkDir::offset).
-//! `metadata` and `is_hidden` on [`AsyncDirEntry`] are `async fn`, and
-//! [`AsyncWalkDir::sort_by`] takes an async key.
-//!
 //! ```no_run
 //! # async fn run() -> walkthrough::Result<()> {
 //! use walkthrough::r#async::AsyncWalkDir;
