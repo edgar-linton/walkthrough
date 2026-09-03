@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::DirEntry;
+use crate::{DirEntry, options::WalkDirOptions};
 
 /// Orders two entries within a directory.
 ///
@@ -23,28 +23,6 @@ impl Sorter {
 impl std::fmt::Debug for Sorter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Sorter")
-    }
-}
-
-// Shared by both walkers; sorting is not.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct WalkDirOptions {
-    pub(crate) min_depth: usize,
-    pub(crate) max_depth: usize,
-    pub(crate) follow_links: bool,
-    pub(crate) group_dir: bool,
-    pub(crate) skip_hidden: bool,
-}
-
-impl Default for WalkDirOptions {
-    fn default() -> Self {
-        Self {
-            min_depth: 0,
-            max_depth: usize::MAX,
-            follow_links: false,
-            group_dir: false,
-            skip_hidden: false,
-        }
     }
 }
 

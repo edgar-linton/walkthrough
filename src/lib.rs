@@ -30,7 +30,7 @@ compile_error!("walkthrough only supports Unix and Windows targets");
 
 mod entry;
 mod error;
-mod iter;
+mod options;
 mod sync;
 
 #[cfg(feature = "async")]
@@ -39,5 +39,4 @@ pub mod r#async;
 pub(crate) use entry::Ancestor;
 pub use entry::DirEntry;
 pub use error::{Error, ErrorKind, Result};
-pub use iter::WalkDir;
-pub use sync::{Blocking, Walker};
+pub use sync::{Blocking, WalkDir, Walker};

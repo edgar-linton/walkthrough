@@ -1,3 +1,4 @@
+mod iter;
 mod state;
 #[cfg(unix)]
 mod unix;
@@ -6,6 +7,7 @@ mod windows;
 
 use std::fs;
 
+pub use iter::WalkDir;
 pub use state::{Blocking, Walker};
 
 use crate::{DirEntry, Error, Result};

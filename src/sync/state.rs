@@ -5,10 +5,8 @@ use std::{
     vec,
 };
 
-use crate::{
-    Ancestor, DirEntry, Error, Result, WalkDir,
-    iter::{Sorter, WalkDirOptions},
-};
+use super::iter::{Sorter, WalkDir};
+use crate::{Ancestor, DirEntry, Error, Result, options::WalkDirOptions};
 
 /// Blocking state marker.
 #[derive(Debug)]

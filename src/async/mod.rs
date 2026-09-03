@@ -56,6 +56,8 @@
 //!   [`sort_by`](AsyncWalkDir::sort_by) awaits something slow, which is also
 //!   where [`concurrency`](AsyncWalkDir::concurrency) earns its keep;
 //! - the tree is on a network filesystem, where per-entry latency dominates.
+mod concurrent;
+mod iter;
 mod state;
 #[cfg(unix)]
 mod unix;
@@ -64,7 +66,8 @@ mod windows;
 
 use std::fs;
 
-pub use state::{Async, AsyncWalkDir, AsyncWalker, Filtering};
+pub use iter::{AsyncWalkDir, Filtering};
+pub use state::{Async, AsyncWalker};
 
 /// Type alias for [`DirEntry<Async>`](crate::DirEntry).
 pub type AsyncDirEntry = crate::DirEntry<Async>;

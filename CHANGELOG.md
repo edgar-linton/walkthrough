@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Internal
+
+- Module layout, with no change to the public API. `iter.rs` is split into
+  `options.rs`, which holds only the `WalkDirOptions` both walkers share, and
+  `sync/iter.rs`, which holds the `WalkDir` builder and its comparator; `WalkDir`
+  keeps its re-export at the crate root. The 931-line `async/state.rs` is split
+  into `async/iter.rs` (the `AsyncWalkDir` builder and the closure types it
+  constructs), `async/concurrent.rs` (the bounded fan-out: `map_bounded`,
+  `resolve`, `sort_by_key`) and `async/state.rs` (the walker), so the async half
+  now mirrors the sync split of builder from walker.
+
 ### Changed
 
 - `follow_links` now resolves a symlink to a *file* on Windows, not just a
