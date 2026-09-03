@@ -12,6 +12,7 @@ default:
 # Lint (warnings are advisory)
 [group('dev')]
 @clippy:
+    cargo clippy --all-targets
     cargo clippy --all-targets --all-features
 alias lint := clippy
 
@@ -20,24 +21,10 @@ alias lint := clippy
 @check:
     cargo check --all-targets --all-features
 
-# Unit tests
+# Run all tests (lib, integration, and doc)
 [group('dev')]
-@test-unit:
-    cargo test --lib --bins
-
-# Documentation tests
-[group('dev')]
-@test-doc:
-    cargo test --doc
-
-# Integration tests
-[group('dev')]
-@test-integration:
-    cargo test --tests
-
-# Run all tests
-[group('dev')]
-test: test-unit test-doc test-integration
+@test:
+    cargo test --all-features
 
 # Format, lint, and run all tests — run before committing
 [group('dev')]
@@ -58,8 +45,8 @@ pre-commit: fmt clippy test
 [group('dev')]
 [doc('Check the docs build clean with and without the async feature')]
 @doc-check:
-    cargo doc --no-deps --document-private-items
-    cargo doc --no-deps --document-private-items --all-features
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+    RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo doc --no-deps --document-private-items --all-features
 
 # ── Release ───────────────────────────────────────────────────────────────────
 #

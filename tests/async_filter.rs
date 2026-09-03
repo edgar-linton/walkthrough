@@ -1,5 +1,3 @@
-#![cfg(feature = "async")]
-
 use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 use futures::StreamExt;

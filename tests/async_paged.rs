@@ -1,5 +1,3 @@
-#![cfg(feature = "async")]
-
 //! Tests for `AsyncWalkDir::limit` and `AsyncWalkDir::offset`.
 //!
 //! The contract is `skip(offset).take(limit)` over the walk the same builder

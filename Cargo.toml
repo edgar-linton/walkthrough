@@ -9,8 +9,6 @@ license = "MIT OR Apache-2.0"
 keywords = ["filesystem", "walkdir", "recursive", "iterator"]
 categories = ["filesystem", "os"]
 
-# `--cfg docsrs` enables `feature(doc_cfg)` in lib.rs, which renders the
-# "Available on ..." badges. `just doc` reproduces this locally.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
@@ -34,14 +32,34 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
 ] }
 
-
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }
-# Only for the tests that drive AsyncWalker through StreamExt combinators.
 futures = "0.3"
 
 [dev-dependencies.cargo-husky]
 version = "1"
 default-features = false
 features = ["user-hooks"]
+
+# Without this cargo builds these targets with the feature off, where they
+# compile to zero tests; `required-features` makes it skip them instead.
+[[test]]
+name = "async"
+required-features = ["async"]
+
+[[test]]
+name = "async_concurrency"
+required-features = ["async"]
+
+[[test]]
+name = "async_dto_listing"
+required-features = ["async"]
+
+[[test]]
+name = "async_filter"
+required-features = ["async"]
+
+[[test]]
+name = "async_paged"
+required-features = ["async"]

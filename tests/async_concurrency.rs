@@ -1,5 +1,3 @@
-#![cfg(feature = "async")]
-
 //! Tests for `AsyncWalkDir::concurrency`.
 //!
 //! Resolving a directory's entries concurrently is a latency change and must

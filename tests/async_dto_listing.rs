@@ -1,5 +1,3 @@
-#![cfg(feature = "async")]
-
 //! Integration test for a realistic web-handler-style use of `AsyncWalkDir`:
 //! walk a directory, project each entry into a plain DTO, sort, and filter —
 //! the shape of code you'd put behind an actix-web (or any tokio-based)

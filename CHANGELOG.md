@@ -142,6 +142,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   already-sorted result. The outcome is the same, and it is one sort instead of
   two.
 
+- The async integration tests are declared as `[[test]]` targets carrying
+  `required-features = ["async"]` instead of opening with an inner
+  `#![cfg(feature = "async")]`. Without the feature cargo now skips those five
+  targets rather than compiling each to zero tests, and the test recipes pass
+  `--all-features`, so `just test` and the pre-commit hook run 101 tests and 5
+  doc-tests where they previously ran 28. CI gained a test job of its own — the
+  suite had only ever run as a side effect of `cargo llvm-cov` — a clippy pass
+  over the featureless build, and `macos-latest` on every matrix. The publish
+  workflow ran the same three featureless commands, so the release gate is now
+  the full suite too.
+
 ### Fixed
 
 - A walk with nothing to overlap no longer spawns a task per entry. On Unix
