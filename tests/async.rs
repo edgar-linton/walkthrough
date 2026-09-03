@@ -111,10 +111,12 @@ fn loop_tree() -> Option<TempDir> {
 fn dangling_symlink_tree() -> Option<TempDir> {
     let tmp = TempDir::new().unwrap();
     let r = tmp.path();
+    // A Windows symlink picks file-vs-dir at creation; a file link is the
+    // case that used to escape resolution, so use it here.
     #[cfg(unix)]
     unix_fs::symlink("__no_such_target__", r.join("dangling")).unwrap();
     #[cfg(windows)]
-    win_fs::symlink_dir("__no_such_target__", r.join("dangling")).ok()?;
+    win_fs::symlink_file("__no_such_target__", r.join("dangling")).ok()?;
     Some(tmp)
 }
 
@@ -572,6 +574,28 @@ async fn test_async_follow_links_true_descends_into_symlinked_dir() {
 }
 
 #[tokio::test]
+async fn test_async_follow_links_true_resolves_symlink_to_file() {
+    let Some(tmp) = symlink_tree() else { return };
+
+    // Following a link makes the entry look like its target on every
+    // platform, not just Unix.
+    let followed = walk_ok(AsyncWalkDir::new(tmp.path()).follow_links(true))
+        .await
+        .into_iter()
+        .find(|e| e.file_name() == "link_to_file")
+        .unwrap();
+    assert!(followed.file_type().is_file());
+    assert!(!followed.file_type().is_symlink());
+
+    let unfollowed = walk_ok(AsyncWalkDir::new(tmp.path()))
+        .await
+        .into_iter()
+        .find(|e| e.file_name() == "link_to_file")
+        .unwrap();
+    assert!(unfollowed.file_type().is_symlink());
+}
+
+#[tokio::test]
 async fn test_async_follow_links_loop_returns_error() {
     let Some(tmp) = loop_tree() else { return };
     let results = walk_all(AsyncWalkDir::new(tmp.path()).follow_links(true)).await;
@@ -745,15 +769,11 @@ async fn test_async_empty_directory_yields_only_root() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_async_metadata_error_after_file_removed() {
+async fn test_async_metadata_after_file_removed_follows_platform_caching() {
     let tmp = TempDir::new().unwrap();
     let file = tmp.path().join("doomed");
     fs::write(&file, "").unwrap();
 
-    // follow_links=true: on Windows metadata() always re-fetches; on unix the
-    // OnceCell is populated for dirs/symlinks at construction, but for a plain
-    // file with follow_link=true metadata() calls fs::metadata at invocation
-    // time, so deleting the file beforehand forces the I/O to fail.
     let entry = walk_ok(
         AsyncWalkDir::new(tmp.path())
             .follow_links(true)
@@ -766,9 +786,17 @@ async fn test_async_metadata_error_after_file_removed() {
 
     fs::remove_file(&file).unwrap();
 
+    // Unix leaves a plain file's cell empty, so this first call does the I/O
+    // now and fails, exercising the error path. Windows takes its metadata
+    // from the directory scan, so the entry keeps the snapshot the walk saw.
     let result = entry.metadata().await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().is_io());
+    #[cfg(unix)]
+    {
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_io());
+    }
+    #[cfg(windows)]
+    assert!(result.is_ok());
 }
 
 // ---------------------------------------------------------------------------

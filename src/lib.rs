@@ -36,8 +36,8 @@ mod sync;
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub mod r#async;
-pub(crate) use entry::Ancestor;
 pub use entry::DirEntry;
+pub(crate) use entry::{Ancestor, LOOPS_NEED_FOLLOW_LINKS};
 pub use error::{Error, ErrorKind, Result};
 pub use iter::WalkDir;
 pub use sync::{Blocking, Walker};

@@ -115,12 +115,12 @@ fn loop_tree() -> Option<TempDir> {
 fn dangling_symlink_tree() -> Option<TempDir> {
     let tmp = TempDir::new().unwrap();
     let r = tmp.path();
-    // On Unix any symlink works; on Windows only a dir symlink causes
-    // from_std to call fs::metadata (and fail) when follow_links=true.
+    // A Windows symlink picks file-vs-dir at creation; a file link is the
+    // case that used to escape resolution, so use it here.
     #[cfg(unix)]
     unix_fs::symlink("__no_such_target__", r.join("dangling")).unwrap();
     #[cfg(windows)]
-    win_fs::symlink_dir("__no_such_target__", r.join("dangling")).ok()?;
+    win_fs::symlink_file("__no_such_target__", r.join("dangling")).ok()?;
     Some(tmp)
 }
 
@@ -339,6 +339,29 @@ fn test_follow_links_true_descends_into_symlinked_dir() {
 }
 
 #[test]
+fn test_follow_links_true_resolves_symlink_to_file() {
+    let Some(tmp) = symlink_tree() else { return };
+
+    // Following a link makes the entry look like its target on every
+    // platform, not just Unix.
+    let followed = WalkDir::new(tmp.path())
+        .follow_links(true)
+        .into_iter()
+        .filter_map(Result::ok)
+        .find(|e| e.file_name() == "link_to_file")
+        .unwrap();
+    assert!(followed.file_type().is_file());
+    assert!(!followed.file_type().is_symlink());
+
+    let unfollowed = WalkDir::new(tmp.path())
+        .into_iter()
+        .filter_map(Result::ok)
+        .find(|e| e.file_name() == "link_to_file")
+        .unwrap();
+    assert!(unfollowed.file_type().is_symlink());
+}
+
+#[test]
 fn test_follow_links_loop_returns_error() {
     let Some(tmp) = loop_tree() else { return };
     let result: Vec<_> = WalkDir::new(tmp.path())
@@ -535,17 +558,11 @@ fn test_walker_debug_does_not_panic() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_metadata_error_after_file_removed() {
+fn test_metadata_after_file_removed_follows_platform_caching() {
     let tmp = TempDir::new().unwrap();
     let file = tmp.path().join("doomed");
     fs::write(&file, "").unwrap();
 
-    // Walk with follow_links=true so every DirEntry has follow_link=true.
-    // For a regular file on Unix, the metadata OnceCell is NOT pre-populated,
-    // so metadata() calls fs::metadata at call-time.
-    // On Windows, metadata() always re-calls fs::metadata when follow_link=true.
-    // Either way, deleting the file before calling metadata() forces that I/O
-    // call to fail, which exercises Error::from_entry.
     let entry = WalkDir::new(tmp.path())
         .follow_links(true)
         .min_depth(1)
@@ -556,9 +573,17 @@ fn test_metadata_error_after_file_removed() {
 
     fs::remove_file(&file).unwrap();
 
+    // Unix leaves a plain file's cell empty, so this first call does the I/O
+    // now and fails, exercising the error path. Windows takes its metadata
+    // from the directory scan, so the entry keeps the snapshot the walk saw.
     let result = entry.metadata();
-    assert!(result.is_err());
-    assert!(result.unwrap_err().is_io());
+    #[cfg(unix)]
+    {
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_io());
+    }
+    #[cfg(windows)]
+    assert!(result.is_ok());
 }
 
 // ---------------------------------------------------------------------------

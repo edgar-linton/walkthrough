@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `follow_links` now resolves a symlink to a *file* on Windows, not just a
+  symlink to a directory. Windows's four constructors gated on
+  `is_symlink_dir()`, so on Windows a followed file symlink kept
+  `file_type().is_symlink()` where Unix reported a file, and a dangling one was
+  yielded as a valid entry instead of producing an I/O error. All eight
+  constructors now resolve on `is_symlink() && follow_link` alone, so
+  `follow_links` means the same thing on both platforms.
+
+- On Windows, `metadata()` no longer re-reads from the filesystem when
+  `follow_links` is set. The constructors now resolve a followed symlink, so
+  the stored value is already the one to report; the re-read only ever existed
+  to cover the `is_symlink_dir()` gap above. It reflects the state the walk
+  saw, which is what Unix has always returned.
+
+### Fixed
+
+- The `std::os::unix::fs::DirEntryExt` impl for `DirEntry<Async>` was missing
+  its `doc(cfg)` annotation, so docs.rs rendered it without the "Available on
+  Unix" badge.
+
+### Documentation
+
+- The `async` module now says that the feature means tokio specifically, and
+  when to prefer `WalkDir` inside `tokio::task::spawn_blocking` instead: it
+  keeps a request handler off its worker thread just as well, with one handover
+  to the blocking pool rather than thousands.
+
+### Performance
+
+- The synchronous walker now skips ancestor bookkeeping on Unix when
+  `follow_links` is off, as the asynchronous one already did — without
+  following a link no cycle is reachable, so the `stat` per directory that
+  identity costs buys nothing. Measured on a 42 000-entry tree: 2001 `stat`
+  calls down to 1, and 18 ms down to 16 ms with a warm page cache. On a network
+  filesystem, where each round trip costs a fraction of a millisecond rather
+  than a microsecond, the same 2000 calls are worth roughly a second.
+
+- Dropped a redundant `metadata` call from six of the eight `DirEntry`
+  constructors. For anything but a followed symlink, the metadata already in
+  hand — `symlink_metadata` for a root, the directory scan's own record for a
+  child — describes the same file, so resolving it again was a wasted syscall
+  per traversal root and, on Windows, per directory child.
+
 ## [0.4.0] - 2026-09-02
 
 ### Added

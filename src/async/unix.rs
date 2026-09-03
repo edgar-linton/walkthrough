@@ -25,7 +25,7 @@ impl DirEntry<Async> {
         } else {
             fs::symlink_metadata(self.path()).await
         }
-        .map_err(|err| Error::from_entry(self, err))?;
+        .map_err(|err| Error::new_io_error(self.path.clone(), self.depth, err))?;
         // Best-effort: ignore a race with another task.
         let _ = self.metadata.set(m.clone());
         Ok(m)
@@ -46,7 +46,9 @@ impl DirEntry<Async> {
         let mut file_type = raw.file_type();
         let mut ino = raw.ino();
         let metadata = OnceCell::new();
-        if file_type.is_dir() || file_type.is_symlink() && follow_link {
+        // Only a followed symlink needs resolving: for anything else
+        // `symlink_metadata` already describes the file itself.
+        if file_type.is_symlink() && follow_link {
             let resolved = fs::metadata(&path)
                 .await
                 .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
@@ -110,6 +112,7 @@ impl DirEntry<Async> {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(unix)))]
 impl DirEntryExt for DirEntry<Async> {
     fn ino(&self) -> u64 {
         self.ino

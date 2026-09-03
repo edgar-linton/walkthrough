@@ -80,13 +80,19 @@ impl<T> DirEntry<T> {
     }
 }
 
+/// Whether ancestor bookkeeping may be skipped when `follow_links` is off.
+///
+/// True on Unix: reaching an already-visited directory requires traversing a
+/// symlink, so with links unfollowed no cycle is reachable and the `stat` per
+/// directory that identity costs buys nothing.
+///
+/// False on Windows: a directory junction can be reported as a directory
+/// rather than a link, so a cycle through one stays reachable. A missed loop
+/// walks forever.
 #[cfg(unix)]
-#[cfg_attr(docsrs, doc(cfg(unix)))]
-impl std::os::unix::fs::DirEntryExt for DirEntry {
-    fn ino(&self) -> u64 {
-        self.ino
-    }
-}
+pub(crate) const LOOPS_NEED_FOLLOW_LINKS: bool = true;
+#[cfg(windows)]
+pub(crate) const LOOPS_NEED_FOLLOW_LINKS: bool = false;
 
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]

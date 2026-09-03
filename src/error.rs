@@ -5,8 +5,6 @@ use std::{
 
 use thiserror::Error;
 
-use crate::DirEntry;
-
 /// Distinguishes the cause of a traversal [`struct@Error`].
 #[derive(Debug, Error)]
 pub enum ErrorKind {
@@ -78,14 +76,6 @@ impl Error {
         match self.kind {
             ErrorKind::Io(err) => Some(err),
             ErrorKind::LoopDetected => None,
-        }
-    }
-
-    pub(crate) fn from_entry<T>(entry: &DirEntry<T>, source: io::Error) -> Self {
-        Self {
-            path: entry.path().to_path_buf(),
-            depth: entry.depth(),
-            kind: ErrorKind::Io(source),
         }
     }
 

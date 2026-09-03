@@ -1,10 +1,7 @@
 use std::{
     fs as std_fs,
     marker::PhantomData,
-    os::windows::{
-        fs::{FileTypeExt, MetadataExt},
-        io::AsRawHandle,
-    },
+    os::windows::{fs::MetadataExt, io::AsRawHandle},
     path::PathBuf,
 };
 
@@ -13,16 +10,14 @@ use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
 };
 
-use crate::{Ancestor, DirEntry, Error, r#async::state::Async};
+use super::state::Async;
+use crate::{Ancestor, DirEntry, Error};
 
 impl DirEntry<Async> {
     pub(super) async fn metadata_impl(&self) -> Result<std_fs::Metadata, Error> {
-        if self.follow_link {
-            fs::metadata(&self.path).await
-        } else {
-            Ok(self.metadata.clone())
-        }
-        .map_err(|err| Error::from_entry(self, err))
+        // The constructor already resolved a followed symlink, so the stored
+        // metadata is the one to report in every case.
+        Ok(self.metadata.clone())
     }
 
     pub(super) async fn is_hidden_impl(&self) -> bool {
@@ -43,9 +38,9 @@ impl DirEntry<Async> {
             .await
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
         let mut file_type = raw.file_type();
-        // Only a followed symlink needs a fresh `metadata` call; a real
-        // directory's came from the scan that produced the entry.
-        let metadata = if file_type.is_symlink_dir() && follow_link {
+        // Only a followed symlink needs resolving: for anything else
+        // `symlink_metadata` already describes the file itself.
+        let metadata = if file_type.is_symlink() && follow_link {
             let resolved = fs::metadata(&path)
                 .await
                 .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
@@ -74,12 +69,14 @@ impl DirEntry<Async> {
             .file_type()
             .await
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
-        let metadata = if file_type.is_dir() || file_type.is_symlink_dir() && follow_link {
-            let metadata = fs::metadata(&path)
+        // Only a followed symlink needs resolving: the scan that produced the
+        // entry already carries every other one's file type and metadata.
+        let metadata = if file_type.is_symlink() && follow_link {
+            let resolved = fs::metadata(&path)
                 .await
                 .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
-            file_type = metadata.file_type();
-            metadata
+            file_type = resolved.file_type();
+            resolved
         } else {
             entry
                 .metadata()

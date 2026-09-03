@@ -10,9 +10,10 @@ use std::{
 
 use once_cell::sync::OnceCell;
 
+use super::state::Blocking;
 use crate::{Ancestor, DirEntry, Error};
 
-impl DirEntry {
+impl DirEntry<Blocking> {
     pub(super) fn metadata_impl(&self) -> Result<fs::Metadata, Error> {
         self.metadata
             .get_or_try_init(|| {
@@ -21,7 +22,7 @@ impl DirEntry {
                 } else {
                     fs::symlink_metadata(self.path())
                 }
-                .map_err(|err| Error::from_entry(self, err))
+                .map_err(|err| Error::new_io_error(self.path.clone(), self.depth, err))
             })
             .map(|m| m.to_owned())
     }
@@ -36,7 +37,9 @@ impl DirEntry {
         let mut file_type = raw.file_type();
         let mut ino = raw.ino();
         let metadata = OnceCell::new();
-        if file_type.is_dir() || file_type.is_symlink() && follow_link {
+        // Only a followed symlink needs resolving: for anything else
+        // `symlink_metadata` already describes the file itself.
+        if file_type.is_symlink() && follow_link {
             let resolved =
                 fs::metadata(&path).map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
             file_type = resolved.file_type();
@@ -67,12 +70,15 @@ impl DirEntry {
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
         let mut ino = entry.ino();
         let metadata = OnceCell::new();
-        if file_type.is_dir() || file_type.is_symlink() && follow_link {
-            let resolved_metadata =
+        // Only a followed symlink needs resolving: `d_type` and `d_ino`
+        // already give a real directory's file type and inode. `ancestor`
+        // resolves on demand through the `OnceCell`.
+        if file_type.is_symlink() && follow_link {
+            let resolved =
                 fs::metadata(&path).map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
-            file_type = resolved_metadata.file_type();
-            ino = resolved_metadata.ino();
-            metadata.set(resolved_metadata).unwrap();
+            file_type = resolved.file_type();
+            ino = resolved.ino();
+            metadata.set(resolved).unwrap();
         }
         Ok(Self {
             path,
@@ -91,5 +97,12 @@ impl DirEntry {
             dev: metadata.dev(),
             ino: metadata.ino(),
         })
+    }
+}
+
+#[cfg_attr(docsrs, doc(cfg(unix)))]
+impl DirEntryExt for DirEntry<Blocking> {
+    fn ino(&self) -> u64 {
+        self.ino
     }
 }

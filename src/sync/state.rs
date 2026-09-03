@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, fmt, fs, path::PathBuf, vec};
 
 use crate::{
-    Ancestor, DirEntry, Error, Result, WalkDir,
+    Ancestor, DirEntry, Error, LOOPS_NEED_FOLLOW_LINKS, Result, WalkDir,
     iter::{Sorter, WalkDirOptions},
 };
 
@@ -85,15 +85,20 @@ impl IntoIterator for WalkDir {
 impl Walker {
     fn push_dir(&mut self, entry: &DirEntry<Blocking>) -> Result<()> {
         let depth = entry.depth();
-        // Truncating evicts a previous subtree's ancestors, so backtracking
-        // needs no explicit pops.
-        self.ancestors.truncate(depth);
 
-        if let Some(ancestor) = entry.ancestor() {
-            if self.ancestors.iter().any(|a| a == &ancestor) {
-                return Err(Error::loop_detected(entry.path().to_path_buf(), depth));
+        // One `stat` per directory, skipped where a loop cannot occur; see
+        // `LOOPS_NEED_FOLLOW_LINKS`.
+        if self.opts.follow_links || !LOOPS_NEED_FOLLOW_LINKS {
+            // Truncating evicts a previous subtree's ancestors, so backtracking
+            // needs no explicit pops.
+            self.ancestors.truncate(depth);
+
+            if let Some(ancestor) = entry.ancestor() {
+                if self.ancestors.iter().any(|a| a == &ancestor) {
+                    return Err(Error::loop_detected(entry.path().to_path_buf(), depth));
+                }
+                self.ancestors.push(ancestor);
             }
-            self.ancestors.push(ancestor);
         }
 
         let path = entry.path().to_path_buf();

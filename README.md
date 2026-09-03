@@ -67,6 +67,37 @@ let paths: Vec<_> = AsyncWalkDir::new("./my_project")
 `walker()` does no I/O, so an unreadable root arrives as the first `Err` rather than
 failing at construction.
 
+### Choosing a walker
+
+The `async` feature means tokio specifically: traversal reads through `tokio::fs` and
+spawns onto the running tokio runtime.
+
+Neither walker reaches the filesystem faster than the other. `tokio::fs` hands every
+operation to a blocking thread pool, and one traversal is thousands of those
+handovers, so on local storage `WalkDir` finishes a walk in a fraction of the time.
+Keeping a request handler off its worker thread is therefore not on its own a reason
+to walk asynchronously — `WalkDir` inside `tokio::task::spawn_blocking` does that with
+a single handover for the whole walk:
+
+```rust
+use walkthrough::WalkDir;
+
+let entries = tokio::task::spawn_blocking(move || {
+    WalkDir::new(root).into_iter().collect::<Vec<_>>()
+})
+.await?;
+```
+
+Reach for `AsyncWalkDir` when something other than the walk itself asks for it:
+
+- entries are consumed as they arrive, so a response can start before the traversal
+  ends;
+- the walk has to end when its caller does — dropping an `AsyncWalker` stops it, where
+  a blocking task runs to completion;
+- `filter_entry` or `sort_by` awaits something slow, which is also where `concurrency`
+  earns its keep;
+- the tree is on a network filesystem, where per-entry latency dominates.
+
 ## Configuration
 
 Both `WalkDir` and `AsyncWalkDir` expose the same builder methods:

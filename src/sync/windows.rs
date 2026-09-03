@@ -2,7 +2,7 @@ use std::{
     fs,
     marker::PhantomData,
     os::windows::{
-        fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
+        fs::{MetadataExt, OpenOptionsExt},
         io::AsRawHandle,
     },
     path::PathBuf,
@@ -17,12 +17,9 @@ use crate::{Ancestor, DirEntry, Error};
 
 impl DirEntry<Blocking> {
     pub(super) fn metadata_impl(&self) -> Result<fs::Metadata, Error> {
-        if self.follow_link {
-            fs::metadata(&self.path)
-        } else {
-            Ok(self.metadata.clone())
-        }
-        .map_err(|err| Error::from_entry(self, err))
+        // The constructor already resolved a followed symlink, so the stored
+        // metadata is the one to report in every case.
+        Ok(self.metadata.clone())
     }
 
     pub(super) fn is_hidden_impl(&self) -> bool {
@@ -38,7 +35,9 @@ impl DirEntry<Blocking> {
         let raw = fs::symlink_metadata(&path)
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
         let mut file_type = raw.file_type();
-        let metadata = if file_type.is_dir() || file_type.is_symlink_dir() && follow_link {
+        // Only a followed symlink needs resolving: for anything else
+        // `symlink_metadata` already describes the file itself.
+        let metadata = if file_type.is_symlink() && follow_link {
             let resolved =
                 fs::metadata(&path).map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
             file_type = resolved.file_type();
@@ -65,11 +64,13 @@ impl DirEntry<Blocking> {
         let mut file_type = entry
             .file_type()
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
-        let metadata = if file_type.is_dir() || file_type.is_symlink_dir() && follow_link {
-            let metadata =
+        // Only a followed symlink needs resolving: the scan that produced the
+        // entry already carries every other one's file type and metadata.
+        let metadata = if file_type.is_symlink() && follow_link {
+            let resolved =
                 fs::metadata(&path).map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
-            file_type = metadata.file_type();
-            metadata
+            file_type = resolved.file_type();
+            resolved
         } else {
             entry
                 .metadata()

@@ -11,7 +11,7 @@ use std::{
 
 use tokio::{fs, task::JoinSet};
 
-use crate::{DirEntry, Error, Result, iter::WalkDirOptions};
+use crate::{DirEntry, Error, LOOPS_NEED_FOLLOW_LINKS, Result, iter::WalkDirOptions};
 
 /// Async state marker.
 #[derive(Debug)]
@@ -19,17 +19,6 @@ pub struct Async;
 
 /// Default for [`AsyncWalkDir::concurrency`].
 const DEFAULT_CONCURRENCY: usize = 32;
-
-/// Whether ancestor bookkeeping may be skipped when
-/// [`AsyncWalkDir::follow_links`] is off.
-///
-/// False on Windows: a directory junction can be reported as a directory
-/// rather than a link, so a cycle through one stays reachable. A missed loop
-/// walks forever.
-#[cfg(unix)]
-const LOOPS_NEED_FOLLOW_LINKS: bool = true;
-#[cfg(windows)]
-const LOOPS_NEED_FOLLOW_LINKS: bool = false;
 
 /// Configuration that only the asynchronous walker has.
 #[derive(Debug, Clone, Copy)]
