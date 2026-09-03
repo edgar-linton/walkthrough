@@ -181,7 +181,7 @@ impl AsyncWalkDir {
     ///
     /// ```no_run
     /// # async fn run() -> walkthrough::Result<()> {
-    /// use walkthrough::r#async::{AsyncWalkDir, Filtering};
+    /// use walkthrough::{AsyncWalkDir, Filtering};
     ///
     /// let mut walker = AsyncWalkDir::new(".")
     ///     .filter_entry(|entry| async move {
@@ -220,7 +220,7 @@ impl AsyncWalkDir {
     ///
     /// ```no_run
     /// # async fn run() -> walkthrough::Result<()> {
-    /// use walkthrough::r#async::AsyncWalkDir;
+    /// use walkthrough::AsyncWalkDir;
     ///
     /// // Directories first, then smallest file first, ties broken by name.
     /// let mut walker = AsyncWalkDir::new("src")

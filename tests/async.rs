@@ -5,10 +5,14 @@ use std::os::windows::fs as win_fs;
 use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 use tempfile::TempDir;
-use walkthrough::{
-    DirEntry, ErrorKind, Result,
-    r#async::{Async, AsyncWalkDir, AsyncWalker},
-};
+use walkthrough::{Async, AsyncWalkDir, AsyncWalker, DirEntry, ErrorKind, Result};
+
+// The async types are public at the crate root and in `aio`. Both paths are
+// API, and the root re-export was dropped once without a test noticing, so
+// pin them to one type here; the rest of the suite covers the root path only.
+fn _both_paths_name_one_type(builder: walkthrough::aio::AsyncWalkDir) -> AsyncWalkDir {
+    builder
+}
 
 // ---------------------------------------------------------------------------
 // Fixture helpers — identical structure to the sync suite

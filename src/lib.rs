@@ -7,9 +7,8 @@
 
 //! Recursive directory traversal.
 //!
-//! [`WalkDir`] walks synchronously. With the `async` feature,
-//! `walkthrough::r#async` walks asynchronously, resolving each directory's
-//! entries concurrently.
+//! [`WalkDir`] walks synchronously. With the `async` feature, `AsyncWalkDir`
+//! walks asynchronously, resolving each directory's entries concurrently.
 //!
 //! Both offer min/max depth, symlink following, symlink-loop detection,
 //! hidden-file filtering, sorting, and directory grouping.
@@ -33,9 +32,17 @@ mod error;
 mod options;
 mod sync;
 
+// Spelled `aio` rather than `async`: the latter is a keyword, and a raw
+// identifier would be paid for at every import in a consumer.
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-pub mod r#async;
+pub mod aio;
+
+// Both state axes reach the root, so generic `DirEntry<T>` code names the two
+// markers by one path.
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub use aio::{Async, AsyncDirEntry, AsyncWalkDir, AsyncWalker, Filtering};
 pub(crate) use entry::Ancestor;
 pub use entry::DirEntry;
 pub use error::{Error, ErrorKind, Result};

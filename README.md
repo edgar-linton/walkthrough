@@ -30,10 +30,13 @@ Enable the `async` feature in `Cargo.toml`:
 walkthrough = { version = "0.4", features = ["async"] }
 ```
 
+The asynchronous types live in `walkthrough::aio` and are re-exported at the crate
+root, so either path names them.
+
 Then drive the walker manually with `.next_entry().await`:
 
 ```rust
-use walkthrough::r#async::AsyncWalkDir;
+use walkthrough::AsyncWalkDir;
 
 let mut walker = AsyncWalkDir::new("./my_project")
     .min_depth(1)
@@ -54,7 +57,7 @@ while let Some(entry) = walker.next_entry().await {
 
 ```rust
 use futures::StreamExt;
-use walkthrough::r#async::AsyncWalkDir;
+use walkthrough::AsyncWalkDir;
 
 let paths: Vec<_> = AsyncWalkDir::new("./my_project")
     .walker()
@@ -141,7 +144,7 @@ comparator cannot await `metadata`. Tuple keys give compound orderings,
 `std::cmp::Reverse` descending order:
 
 ```rust
-use walkthrough::r#async::AsyncWalkDir;
+use walkthrough::AsyncWalkDir;
 
 // Directories first, then smallest file first, ties broken by name.
 let walker = AsyncWalkDir::new(".")
@@ -168,7 +171,7 @@ The win scales with per-entry latency. Locally, 2200 entries ordered by size tak
 is reasonable: 2000 entries at 5 ms each take 10.2 s sequentially, 175 ms at 64.
 
 ```rust
-use walkthrough::r#async::AsyncWalkDir;
+use walkthrough::AsyncWalkDir;
 
 let walker = AsyncWalkDir::new("/mnt/share")
     .max_depth(1)
@@ -185,7 +188,7 @@ subtree without reading it. The predicate is async, so it may await `metadata`:
 ```rust
 use std::sync::Arc;
 
-use walkthrough::r#async::{AsyncDirEntry, AsyncWalkDir, Filtering};
+use walkthrough::{AsyncDirEntry, AsyncWalkDir, Filtering};
 
 let mut walker = AsyncWalkDir::new("./my_project")
     .filter_entry(|entry: Arc<AsyncDirEntry>| async move {
@@ -208,7 +211,7 @@ pruning the walk is the part a downstream combinator cannot express.
 would otherwise produce:
 
 ```rust
-use walkthrough::r#async::AsyncWalkDir;
+use walkthrough::AsyncWalkDir;
 
 let walker = AsyncWalkDir::new(root)
     .max_depth(1)

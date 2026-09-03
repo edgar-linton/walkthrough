@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 use futures::StreamExt;
 use tempfile::TempDir;
-use walkthrough::r#async::{AsyncWalkDir, Filtering};
+use walkthrough::{AsyncWalkDir, Filtering};
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -333,7 +333,7 @@ async fn test_stream_ext_filter_does_not_prune_descent() {
 #[tokio::test]
 async fn test_stream_skip_take_matches_offset_and_limit() {
     let tmp = tree();
-    let key = |e: Arc<walkthrough::r#async::AsyncDirEntry>| async move { e.path().to_path_buf() };
+    let key = |e: Arc<walkthrough::AsyncDirEntry>| async move { e.path().to_path_buf() };
 
     let paged: Vec<String> = {
         let mut walker = AsyncWalkDir::new(tmp.path())

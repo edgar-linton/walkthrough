@@ -14,7 +14,7 @@ use std::{
 };
 
 use tempfile::TempDir;
-use walkthrough::r#async::{AsyncDirEntry, AsyncWalkDir};
+use walkthrough::{AsyncDirEntry, AsyncWalkDir};
 
 /// root/
 /// ├── a/

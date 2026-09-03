@@ -84,7 +84,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   fate before the walker descends, returning the new `Filtering` enum:
 
   ```rust
-  use walkthrough::r#async::{AsyncWalkDir, Filtering};
+  use walkthrough::{AsyncWalkDir, Filtering};
 
   let walker = AsyncWalkDir::new(".")
       .filter_entry(|entry| async move {
@@ -115,8 +115,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   let walker = AsyncWalkDir::new("/mnt/share")
       .concurrency(256)
       .sort_by(|entry| async move { entry.metadata().await.map(|m| m.len()).unwrap_or(0) })
-      .walker()
-      .await;
+      .walker();
   ```
 
   Every per-entry resolve the walker performs is bounded by it: the `sort_by`
@@ -147,7 +146,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   the rest of an SQL-backed API:
 
   ```rust
-  let walker = AsyncWalkDir::new(root).offset(200).limit(100).walker().await;
+  let walker = AsyncWalkDir::new(root).offset(200).limit(100).walker();
   ```
 
   Counted over yielded entries across the whole traversal rather than per
@@ -187,17 +186,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **Breaking (API):** `AsyncWalker::into_stream` is removed. `AsyncWalker` now
   implements `Stream` itself, so the conversion had nothing left to do.
 
-- **Breaking (API):** the async types are no longer re-exported at the crate
-  root. `Async`, `AsyncDirEntry`, `AsyncWalkDir` and `AsyncWalker` are reached
-  through the `async` module:
+- **Breaking (API):** the asynchronous module is renamed from `r#async` to
+  `aio`. `Async`, `AsyncDirEntry`, `AsyncWalkDir`, `AsyncWalker` and
+  `Filtering` are re-exported at the crate root as well, so either path names
+  them:
 
   ```rust
-  use walkthrough::r#async::AsyncWalkDir;
+  use walkthrough::AsyncWalkDir;
+  // or
+  use walkthrough::aio::AsyncWalkDir;
   ```
 
-  The names already carry the prefix, so the root re-export spelled it twice,
-  and the module path is what makes a `use` line say which half of the crate it
-  pulls in.
+  `async` is a keyword, so the old module could only be named as the raw
+  identifier `walkthrough::r#async`, which every import in a consumer paid for.
+  The root is where 0.3.0 exposed these names too — `Filtering` excepted, as it
+  is new here — and it puts the two state markers on one path, so generic
+  `DirEntry<T>` code no longer reaches `Blocking` and `Async` differently.
 
 - **Breaking (behaviour):** entries whose sort keys compare equal are now
   ordered by file name. The order within a directory is, in precedence order,

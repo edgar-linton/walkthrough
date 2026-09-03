@@ -2,7 +2,7 @@
 //!
 //! ```no_run
 //! # async fn run() -> walkthrough::Result<()> {
-//! use walkthrough::r#async::AsyncWalkDir;
+//! use walkthrough::AsyncWalkDir;
 //!
 //! let mut walker = AsyncWalkDir::new("./my_project").max_depth(5).walker();
 //!
