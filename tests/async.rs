@@ -1,5 +1,3 @@
-#![cfg(feature = "async")]
-
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 #[cfg(windows)]
@@ -8,6 +6,13 @@ use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 use tempfile::TempDir;
 use walkthrough::{Async, AsyncWalkDir, AsyncWalker, DirEntry, ErrorKind, Result};
+
+// The async types are public at the crate root and in `aio`. Both paths are
+// API, and the root re-export was dropped once without a test noticing, so
+// pin them to one type here; the rest of the suite covers the root path only.
+fn _both_paths_name_one_type(builder: walkthrough::aio::AsyncWalkDir) -> AsyncWalkDir {
+    builder
+}
 
 // ---------------------------------------------------------------------------
 // Fixture helpers — identical structure to the sync suite
@@ -105,15 +110,41 @@ fn loop_tree() -> Option<TempDir> {
 
 /// ```text
 /// root/
+///   a/
+///     b/
+///       j  ->  root/a   (directory junction)
+/// ```
+/// A junction is a reparse point that needs no privileges to create, unlike a
+/// symlink, so this fixture is available wherever [`loop_tree`] is not.
+/// Returns `None` if `mklink` is unavailable.
+#[cfg(windows)]
+fn junction_loop_tree() -> Option<TempDir> {
+    let tmp = TempDir::new().unwrap();
+    let r = tmp.path();
+    let a = r.join("a");
+    fs::create_dir_all(a.join("b")).unwrap();
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(a.join("b").join("j"))
+        .arg(&a)
+        .output()
+        .ok()?;
+    out.status.success().then_some(tmp)
+}
+
+/// ```text
+/// root/
 ///   dangling  ->  __no_such_target__
 /// ```
 fn dangling_symlink_tree() -> Option<TempDir> {
     let tmp = TempDir::new().unwrap();
     let r = tmp.path();
+    // A Windows symlink picks file-vs-dir at creation; a file link is the
+    // case that used to escape resolution, so use it here.
     #[cfg(unix)]
     unix_fs::symlink("__no_such_target__", r.join("dangling")).unwrap();
     #[cfg(windows)]
-    win_fs::symlink_dir("__no_such_target__", r.join("dangling")).ok()?;
+    win_fs::symlink_file("__no_such_target__", r.join("dangling")).ok()?;
     Some(tmp)
 }
 
@@ -122,9 +153,9 @@ fn dangling_symlink_tree() -> Option<TempDir> {
 // ---------------------------------------------------------------------------
 
 async fn walk_all(walk: AsyncWalkDir) -> Vec<Result<DirEntry<Async>>> {
-    let mut walker: AsyncWalker = walk.walker().await;
+    let mut walker: AsyncWalker = walk.walker();
     let mut out = Vec::new();
-    while let Some(res) = walker.next().await {
+    while let Some(res) = walker.next_entry().await {
         out.push(res);
     }
     out
@@ -571,6 +602,28 @@ async fn test_async_follow_links_true_descends_into_symlinked_dir() {
 }
 
 #[tokio::test]
+async fn test_async_follow_links_true_resolves_symlink_to_file() {
+    let Some(tmp) = symlink_tree() else { return };
+
+    // Following a link makes the entry look like its target on every
+    // platform, not just Unix.
+    let followed = walk_ok(AsyncWalkDir::new(tmp.path()).follow_links(true))
+        .await
+        .into_iter()
+        .find(|e| e.file_name() == "link_to_file")
+        .unwrap();
+    assert!(followed.file_type().is_file());
+    assert!(!followed.file_type().is_symlink());
+
+    let unfollowed = walk_ok(AsyncWalkDir::new(tmp.path()))
+        .await
+        .into_iter()
+        .find(|e| e.file_name() == "link_to_file")
+        .unwrap();
+    assert!(unfollowed.file_type().is_symlink());
+}
+
+#[tokio::test]
 async fn test_async_follow_links_loop_returns_error() {
     let Some(tmp) = loop_tree() else { return };
     let results = walk_all(AsyncWalkDir::new(tmp.path()).follow_links(true)).await;
@@ -744,15 +797,11 @@ async fn test_async_empty_directory_yields_only_root() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_async_metadata_error_after_file_removed() {
+async fn test_async_metadata_after_file_removed_follows_platform_caching() {
     let tmp = TempDir::new().unwrap();
     let file = tmp.path().join("doomed");
     fs::write(&file, "").unwrap();
 
-    // follow_links=true: on Windows metadata() always re-fetches; on unix the
-    // OnceCell is populated for dirs/symlinks at construction, but for a plain
-    // file with follow_link=true metadata() calls fs::metadata at invocation
-    // time, so deleting the file beforehand forces the I/O to fail.
     let entry = walk_ok(
         AsyncWalkDir::new(tmp.path())
             .follow_links(true)
@@ -765,13 +814,21 @@ async fn test_async_metadata_error_after_file_removed() {
 
     fs::remove_file(&file).unwrap();
 
+    // Unix leaves a plain file's cell empty, so this first call does the I/O
+    // now and fails, exercising the error path. Windows takes its metadata
+    // from the directory scan, so the entry keeps the snapshot the walk saw.
     let result = entry.metadata().await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().is_io());
+    #[cfg(unix)]
+    {
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_io());
+    }
+    #[cfg(windows)]
+    assert!(result.is_ok());
 }
 
 // ---------------------------------------------------------------------------
-// Debug format — covers AsyncWalker::fmt and DirStream::fmt
+// Debug format — covers AsyncWalkDir::fmt and AsyncWalker::fmt
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -783,18 +840,18 @@ async fn test_async_walkdir_debug_with_sort_by_contains_sorter() {
 #[tokio::test]
 async fn test_async_walker_debug_does_not_panic() {
     let tmp = basic_tree();
-    let walker = AsyncWalkDir::new(tmp.path()).walker().await;
+    let walker = AsyncWalkDir::new(tmp.path()).walker();
     let _ = format!("{walker:?}");
 }
 
 #[tokio::test]
-async fn test_async_walker_debug_with_live_stream_does_not_panic() {
-    // After calling next() once the stack holds a DirStream::Live item; its
-    // Debug impl must not panic.
+async fn test_async_walker_debug_after_first_entry_does_not_panic() {
+    // The walker owns a boxed stream, so its Debug reports the options rather
+    // than the traversal stack; it must stay printable mid-walk.
     let tmp = basic_tree();
-    let mut walker = AsyncWalkDir::new(tmp.path()).walker().await;
-    let _ = walker.next().await; // root → pushes a Live stream onto the stack
-    let _ = format!("{walker:?}");
+    let mut walker = AsyncWalkDir::new(tmp.path()).walker();
+    let _ = walker.next_entry().await;
+    assert!(format!("{walker:?}").contains("AsyncWalker"));
 }
 
 // ---------------------------------------------------------------------------
@@ -813,4 +870,49 @@ async fn test_async_unix_direntry_ino_is_nonzero() {
         .next()
         .unwrap();
     assert!(entry.ino() > 0);
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn test_async_windows_junction_without_follow_links_is_bounded() {
+    let Some(tmp) = junction_loop_tree() else {
+        return;
+    };
+    // Bounded so a missed loop fails the test rather than hanging it.
+    let (oks, errs): (Vec<_>, Vec<_>) = walk_all(AsyncWalkDir::new(tmp.path()).max_depth(12))
+        .await
+        .into_iter()
+        .partition(Result::is_ok);
+    let entries: Vec<_> = oks.into_iter().map(Result::unwrap).collect();
+    let errors: Vec<_> = errs.into_iter().map(Result::unwrap_err).collect();
+
+    if entries.iter().any(|e| e.file_name() == "j" && e.is_dir()) {
+        // Windows reported the junction as a plain directory, so the walk
+        // descended through it and the reparse point had to arm loop
+        // detection. This is the branch the arming exists for, and it cannot
+        // be forced on NTFS, where a junction reads as a link instead.
+        assert!(errors.iter().any(|e| e.is_loop()), "{errors:?}");
+    } else {
+        // A junction reporting as a link is never descended into, so nothing
+        // arms and no handle is opened: a, a/b and a/b/j, and no error.
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(entries.iter().filter(|e| e.depth() > 0).count(), 3);
+    }
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn test_async_windows_junction_loop_with_follow_links_returns_error() {
+    // A junction needs no privileges, so unlike `loop_tree` this reaches loop
+    // detection through a reparse point wherever the tests run.
+    let Some(tmp) = junction_loop_tree() else {
+        return;
+    };
+    let results = walk_all(
+        AsyncWalkDir::new(tmp.path())
+            .follow_links(true)
+            .max_depth(12),
+    )
+    .await;
+    assert!(results.into_iter().any(|r| r.is_err_and(|e| e.is_loop())));
 }

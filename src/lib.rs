@@ -3,21 +3,15 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(test, deny(warnings))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![deny(rustdoc::broken_intra_doc_links)]
 
-//! # Recursive Directory Traversal
+//! Recursive directory traversal.
 //!
-//! This crate provides a flexible and efficient way to recursively walk through
-//! directories. It handles common tasks like:
+//! [`WalkDir`] walks synchronously. With the `async` feature, `AsyncWalkDir`
+//! walks asynchronously, resolving each directory's entries concurrently.
 //!
-//! * Filtering hidden files.
-//! * Setting minimum and maximum recursion depth.
-//! * Following or ignoring symbolic links.
-//! * Sorting entries within a directory — by a comparator over the entry when
-//!   walking synchronously, or by an asynchronously computed key when walking
-//!   asynchronously, where metadata is only reachable through an `await`.
-//! * Detecting symbolic link loops to prevent infinite recursion.
-//!
-//! ## Example
+//! Both offer min/max depth, symlink following, symlink-loop detection,
+//! hidden-file filtering, sorting, and directory grouping.
 //!
 //! ```no_run
 //! use walkthrough::WalkDir;
@@ -30,22 +24,26 @@
 //! }
 //! ```
 
-// Unsupported targets produce a clear compile error rather than a cryptic
-// "method not found" cascade from the missing platform-specific impl modules.
 #[cfg(not(any(unix, windows)))]
 compile_error!("walkthrough only supports Unix and Windows targets");
 
 mod entry;
 mod error;
-mod iter;
+mod options;
 mod sync;
 
+// Spelled `aio` rather than `async`: the latter is a keyword, and a raw
+// identifier would be paid for at every import in a consumer.
 #[cfg(feature = "async")]
-pub mod r#async;
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub mod aio;
+
+// Both state axes reach the root, so generic `DirEntry<T>` code names the two
+// markers by one path.
 #[cfg(feature = "async")]
-pub use r#async::{Async, AsyncDirEntry, AsyncWalkDir, AsyncWalker};
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub use aio::{Async, AsyncDirEntry, AsyncWalkDir, AsyncWalker, Filtering};
 pub(crate) use entry::Ancestor;
 pub use entry::DirEntry;
 pub use error::{Error, ErrorKind, Result};
-pub use iter::WalkDir;
-pub use sync::{Sync, Walker};
+pub use sync::{Blocking, WalkDir, Walker};

@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/walkthrough/badge.svg)](https://docs.rs/walkthrough)
 [![CI](https://github.com/edgar-linton/walkthrough/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/edgar-linton/walkthrough/actions/workflows/rust-ci.yml)
 
-A recursive directory iterator for Rust with depth control, symlink loop detection, sorting, and hidden-file filtering. Supports both synchronous and asynchronous traversal.
+A recursive directory iterator for Rust with depth control, symlink loop detection, sorting, and hidden-file filtering. Supports both synchronous and asynchronous traversal, with concurrent metadata resolution and `limit`/`offset` paging on the async side.
 
 ## Usage
 
@@ -27,10 +27,13 @@ Enable the `async` feature in `Cargo.toml`:
 
 ```toml
 [dependencies]
-walkthrough = { version = "0.2", features = ["async"] }
+walkthrough = { version = "0.4", features = ["async"] }
 ```
 
-Then drive the walker manually with `.next().await`:
+The asynchronous types live in `walkthrough::aio` and are re-exported at the crate
+root, so either path names them.
+
+Then drive the walker manually with `.next_entry().await`:
 
 ```rust
 use walkthrough::AsyncWalkDir;
@@ -39,16 +42,64 @@ let mut walker = AsyncWalkDir::new("./my_project")
     .min_depth(1)
     .max_depth(5)
     .skip_hidden(true)
-    .walker()
-    .await;
+    .walker();
 
-while let Some(entry) = walker.next().await {
+while let Some(entry) = walker.next_entry().await {
     match entry {
         Ok(e)  => println!("{}", e.path().display()),
         Err(e) => eprintln!("error: {e}"),
     }
 }
 ```
+
+`AsyncWalker` also implements `futures_core::Stream`, so the combinators of
+`futures::StreamExt` or `tokio_stream::StreamExt` apply to it directly:
+
+```rust
+use futures::StreamExt;
+use walkthrough::AsyncWalkDir;
+
+let paths: Vec<_> = AsyncWalkDir::new("./my_project")
+    .walker()
+    .filter_map(|entry| async move { entry.ok() })
+    .map(|entry| entry.into_path())
+    .collect()
+    .await;
+```
+
+`walker()` does no I/O, so an unreadable root arrives as the first `Err` rather than
+failing at construction.
+
+### Choosing a walker
+
+The `async` feature means tokio specifically: traversal reads through `tokio::fs` and
+spawns onto the running tokio runtime.
+
+Neither walker reaches the filesystem faster than the other. `tokio::fs` hands every
+operation to a blocking thread pool, and one traversal is thousands of those
+handovers, so on local storage `WalkDir` finishes a walk in a fraction of the time.
+Keeping a request handler off its worker thread is therefore not on its own a reason
+to walk asynchronously — `WalkDir` inside `tokio::task::spawn_blocking` does that with
+a single handover for the whole walk:
+
+```rust
+use walkthrough::WalkDir;
+
+let entries = tokio::task::spawn_blocking(move || {
+    WalkDir::new(root).into_iter().collect::<Vec<_>>()
+})
+.await?;
+```
+
+Reach for `AsyncWalkDir` when something other than the walk itself asks for it:
+
+- entries are consumed as they arrive, so a response can start before the traversal
+  ends;
+- the walk has to end when its caller does — dropping an `AsyncWalker` stops it, where
+  a blocking task runs to completion;
+- `filter_entry` or `sort_by` awaits something slow, which is also where `concurrency`
+  earns its keep;
+- the tree is on a network filesystem, where per-entry latency dominates.
 
 ## Configuration
 
@@ -63,13 +114,22 @@ Both `WalkDir` and `AsyncWalkDir` expose the same builder methods:
 | `group_dir(bool)`    | `false`   | Yield directories before files at each level     |
 | `sort_by(fn)`        | none      | Order the entries within each directory           |
 
-`sort_by` is the one method whose argument differs between the two walkers, because
-metadata is reachable synchronously in one and only through an `await` in the other.
+`sort_by`'s argument differs between the walkers: a comparator in one, an async key in
+the other.
+
+`AsyncWalkDir` has three more:
+
+| Method             | Default   | Description                                            |
+| ------------------ | --------- | ------------------------------------------------------ |
+| `concurrency(n)`   | `32`      | Entries of one directory resolved at once              |
+| `filter_entry(fn)` | none      | Decide each entry's fate before descending into it     |
+| `limit(n)`         | unlimited | Yield at most `n` entries, then end the walk           |
+| `offset(n)`        | `0`       | Skip the first `n` entries the walk would yield        |
 
 ### Sorting
 
-`WalkDir::sort_by` takes a comparator. `metadata` is cached on the entry, so reading
-it from there costs one `stat` per entry rather than one per comparison:
+`WalkDir::sort_by` takes a comparator; `metadata` is cached, so reading it there costs
+one `stat` per entry, not one per comparison:
 
 ```rust
 use walkthrough::WalkDir;
@@ -79,11 +139,9 @@ let walker = WalkDir::new(".")
     .sort_by(|a, b| a.file_name().cmp(b.file_name()));
 ```
 
-`AsyncWalkDir::sort_by` takes a key instead, computed asynchronously and awaited once
-per entry before ordering. A comparator would be the wrong shape there: it cannot
-await `metadata`, and blocking on it from inside one panics with "Cannot start a
-runtime from within a runtime" — a `500` if the walk happens in a request handler.
-Compound orderings are tuple keys, and descending order is `std::cmp::Reverse`:
+`AsyncWalkDir::sort_by` takes a key, awaited once per entry before ordering, since a
+comparator cannot await `metadata`. Tuple keys give compound orderings,
+`std::cmp::Reverse` descending order:
 
 ```rust
 use walkthrough::AsyncWalkDir;
@@ -94,45 +152,107 @@ let walker = AsyncWalkDir::new(".")
         let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
         (!entry.is_dir(), size, entry.file_name().to_owned())
     })
-    .walker()
-    .await;
+    .walker();
 ```
 
-The entry arrives as an `Arc`, so the key may hold it across an `await` and metadata
-it resolves stays cached on the entry the walk yields. Entries that failed outright
-are placed ahead of the rest without a key being computed for them, and `group_dir`
-is applied after the key, so it still wins over it.
+The entry arrives as an `Arc`, so the key may hold it across an `await`, and metadata
+it resolves stays cached on the yielded entry.
+
+The order is total, in precedence order: `group_dir`, then entries that failed
+outright, then the key, then the file name.
+
+### Concurrency
+
+`concurrency` bounds every per-entry resolve: the `sort_by` key, the file type on a
+filesystem without `d_type`, and the hidden flag on Windows. It never affects order.
+
+The win scales with per-entry latency. Locally, 2200 entries ordered by size take
+38.7 ms at `concurrency(1)` and 15.2 ms at the default 32. On a network mount 128–512
+is reasonable: 2000 entries at 5 ms each take 10.2 s sequentially, 175 ms at 64.
+
+```rust
+use walkthrough::AsyncWalkDir;
+
+let walker = AsyncWalkDir::new("/mnt/share")
+    .max_depth(1)
+    .concurrency(256)
+    .sort_by(|entry| async move { entry.metadata().await.map(|m| m.len()).unwrap_or(0) })
+    .walker();
+```
+
+### Filtering
+
+`filter_entry` runs before the walker descends, so `Filtering::IgnoreDir` prunes a
+subtree without reading it. The predicate is async, so it may await `metadata`:
+
+```rust
+use std::sync::Arc;
+
+use walkthrough::{AsyncDirEntry, AsyncWalkDir, Filtering};
+
+let mut walker = AsyncWalkDir::new("./my_project")
+    .filter_entry(|entry: Arc<AsyncDirEntry>| async move {
+        if entry.file_name() == "target" {
+            Filtering::IgnoreDir
+        } else {
+            Filtering::Continue
+        }
+    })
+    .walker();
+```
+
+`Filtering::IgnoreEntry` drops the entry but still descends into it. To drop entries
+from the output without affecting descent at all, use `StreamExt::filter` instead —
+pruning the walk is the part a downstream combinator cannot express.
+
+### Paging
+
+`limit` and `offset` are `skip(offset).take(limit)` over the walk the same builder
+would otherwise produce:
+
+```rust
+use walkthrough::AsyncWalkDir;
+
+let walker = AsyncWalkDir::new(root)
+    .max_depth(1)
+    .offset(200)
+    .limit(100)
+    .sort_by(|entry| async move { entry.metadata().await.map(|m| m.len()).unwrap_or(0) })
+    .walker();
+```
+
+They count yielded entries across the whole traversal, not per directory. A skipped
+directory is still descended into, and an offset past the end yields nothing.
+
+Set an ordering when paginating: filesystem order is not reproducible across two
+`read_dir` calls, so an offset over an unordered walk is not a stable position.
 
 ## How it works
 
-The walker maintains a stack of open directory handles. In the unsorted case the handle is read one entry at a time (`DirStream::Live`); when sorting is configured all entries are collected first (`DirStream::Sorted`). On backtracking the stack is popped, keeping memory proportional to tree depth rather than total size.
+The walker maintains a stack of open directory handles. In the unsorted case the handle is read in batches of `concurrency` entries, which are resolved together and drained one at a time (`DirStream::Live`); when sorting is configured all entries are collected, resolved `concurrency` at a time, and ordered first (`DirStream::Sorted`). On backtracking the stack is popped, keeping memory proportional to tree depth rather than total size.
 
 Symlink loop detection compares device/inode identifiers (or equivalent) of every ancestor in the current path. A loop is reported as an error and traversal continues.
 
 ## Development
 
-The project pins a nightly Rust toolchain via `rust-toolchain.toml` (needed for
-`rustfmt`'s doc-comment, string, and import-grouping options in `rustfmt.toml`);
-`rustup` fetches it automatically on first use.
+The toolchain is pinned nightly in `rust-toolchain.toml`, required by the options in
+`rustfmt.toml`; `rustup` fetches it automatically.
 
-[`just`](https://github.com/casey/just) is used to run common local dev tasks;
-CI runs its own checks directly rather than through `just` (see
-`.github/workflows/`):
+Local tasks run through [`just`](https://github.com/casey/just); CI runs its own
+commands directly (see `.github/workflows/`):
 
 ```
 just fmt              # format code in place
 just clippy           # run linter
 just test             # run all tests
-just pre-commit       # format, lint, and test — run before committing
+just doc              # docs as docs.rs renders them
+just pre-commit       # format, lint, and test — also a git pre-commit hook
 ```
 
-`just pre-commit` also runs automatically as a git pre-commit hook, installed by
-`cargo-husky` the first time you run `cargo test` after cloning — no separate setup
-step required.
+The hook is installed by `cargo-husky` on the first `cargo test` after cloning.
 
-To cut a release: bump the version in `Cargo.toml`, add a dated entry to
-`CHANGELOG.md`, commit, then `just tag` to tag and push — the publish workflow
-verifies the tag, re-runs CI, and publishes to crates.io.
+To cut a release: bump `Cargo.toml`, add a dated entry to `CHANGELOG.md`, commit, then
+`just tag`.
 
 ## License
 

@@ -1,11 +1,8 @@
 use std::{
     fs as std_fs,
     marker::PhantomData,
-    os::windows::{
-        fs::{FileTypeExt, MetadataExt},
-        io::AsRawHandle,
-    },
-    path::PathBuf,
+    os::windows::{fs::MetadataExt, io::AsRawHandle},
+    path::{Path, PathBuf},
 };
 
 use tokio::fs;
@@ -13,16 +10,14 @@ use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
 };
 
-use crate::{Ancestor, DirEntry, Error, r#async::state::Async};
+use super::state::Async;
+use crate::{Ancestor, DirEntry, Error};
 
 impl DirEntry<Async> {
     pub(super) async fn metadata_impl(&self) -> Result<std_fs::Metadata, Error> {
-        if self.follow_link {
-            fs::metadata(&self.path).await
-        } else {
-            Ok(self.metadata.clone())
-        }
-        .map_err(|err| Error::from_entry(self, err))
+        // The constructor already resolved a followed symlink, so the stored
+        // metadata is the one to report in every case.
+        Ok(self.metadata.clone())
     }
 
     pub(super) async fn is_hidden_impl(&self) -> bool {
@@ -43,7 +38,9 @@ impl DirEntry<Async> {
             .await
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
         let mut file_type = raw.file_type();
-        let metadata = if file_type.is_dir() || file_type.is_symlink_dir() && follow_link {
+        // Only a followed symlink needs resolving: for anything else
+        // `symlink_metadata` already describes the file itself.
+        let metadata = if file_type.is_symlink() && follow_link {
             let resolved = fs::metadata(&path)
                 .await
                 .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
@@ -72,12 +69,14 @@ impl DirEntry<Async> {
             .file_type()
             .await
             .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
-        let metadata = if file_type.is_dir() || file_type.is_symlink_dir() && follow_link {
-            let metadata = fs::metadata(&path)
+        // Only a followed symlink needs resolving: the scan that produced the
+        // entry already carries every other one's file type and metadata.
+        let metadata = if file_type.is_symlink() && follow_link {
+            let resolved = fs::metadata(&path)
                 .await
                 .map_err(|err| Error::new_io_error(path.clone(), depth, err))?;
-            file_type = metadata.file_type();
-            metadata
+            file_type = resolved.file_type();
+            resolved
         } else {
             entry
                 .metadata()
@@ -96,27 +95,31 @@ impl DirEntry<Async> {
     }
 
     pub(crate) async fn ancestor(&self) -> Option<Ancestor> {
-        // FILE_FLAG_BACKUP_SEMANTICS is required to open a directory handle
-        // (including when the path resolves to a directory via a symlink).
-        // Without it, CreateFile returns ERROR_ACCESS_DENIED for directories.
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-            .open(self.path())
-            .await
-            .ok()?;
-        let handle = file.as_raw_handle();
-
-        unsafe {
-            let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
-            if GetFileInformationByHandle(handle, &mut info) != 0 {
-                let index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
-                return Some(Ancestor {
-                    volume: info.dwVolumeSerialNumber,
-                    index,
-                });
-            }
-        }
-        None
+        ancestor_of(self.path()).await
     }
+}
+
+/// Identity of the directory at `path`, as far as it can be obtained.
+pub(super) async fn ancestor_of(path: &Path) -> Option<Ancestor> {
+    // FILE_FLAG_BACKUP_SEMANTICS is required for a directory handle;
+    // without it CreateFile returns ERROR_ACCESS_DENIED.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .await
+        .ok()?;
+    let handle = file.as_raw_handle();
+
+    unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        if GetFileInformationByHandle(handle, &mut info) != 0 {
+            let index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+            return Some(Ancestor {
+                volume: info.dwVolumeSerialNumber,
+                index,
+            });
+        }
+    }
+    None
 }

@@ -12,6 +12,7 @@ default:
 # Lint (warnings are advisory)
 [group('dev')]
 @clippy:
+    cargo clippy --all-targets
     cargo clippy --all-targets --all-features
 alias lint := clippy
 
@@ -20,24 +21,10 @@ alias lint := clippy
 @check:
     cargo check --all-targets --all-features
 
-# Unit tests
+# Run all tests (lib, integration, and doc)
 [group('dev')]
-@test-unit:
-    cargo test --lib --bins
-
-# Documentation tests
-[group('dev')]
-@test-doc:
-    cargo test --doc
-
-# Integration tests
-[group('dev')]
-@test-integration:
-    cargo test --tests
-
-# Run all tests
-[group('dev')]
-test: test-unit test-doc test-integration
+@test:
+    cargo test --all-features
 
 # Format, lint, and run all tests — run before committing
 [group('dev')]
@@ -48,12 +35,23 @@ pre-commit: fmt clippy test
 @cov:
     cargo llvm-cov --all-features --workspace --open
 
+# Mirrors [package.metadata.docs.rs] in Cargo.toml — keep the two in step
+[group('dev')]
+[doc('Build and open the public docs as docs.rs will render them')]
+@doc:
+    RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo doc --all-features --no-deps --open
+
+# Neither configuration alone checks every link; this is what CI runs
+[group('dev')]
+[doc('Check the docs build clean with and without the async feature')]
+@doc-check:
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+    RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo doc --no-deps --document-private-items --all-features
+
 # ── Release ───────────────────────────────────────────────────────────────────
 #
-# CI runs its own checks directly (see .github/workflows/) rather than through
-# just, so there's one place — the workflow file — that defines what actually
-# gates a merge or a publish. These recipes are for a human cutting a release:
-# bump Cargo.toml and CHANGELOG.md by hand, commit, then `just tag`.
+# CI defines what gates a merge (see .github/workflows/); these are for a human
+# cutting a release: bump Cargo.toml and CHANGELOG.md, commit, then `just tag`.
 
 # Dry-run cargo publish without uploading anything
 [group('release')]

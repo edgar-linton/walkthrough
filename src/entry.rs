@@ -5,11 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::Sync;
+use crate::Blocking;
 
 /// Directory entry.
 #[derive(Debug)]
-pub struct DirEntry<T = Sync> {
+pub struct DirEntry<T = Blocking> {
     pub(super) path: PathBuf,
     pub(super) file_type: fs::FileType,
     pub(super) follow_link: bool,
@@ -23,9 +23,8 @@ pub struct DirEntry<T = Sync> {
     pub(super) state: PhantomData<T>,
 }
 
-// Written out rather than derived: the state is a `PhantomData` marker, so a
-// clone never depends on it, but a derived impl would demand `T: Clone` and
-// therefore apply to neither state.
+// Not derived: a derived impl would demand `T: Clone`, which neither state
+// marker satisfies.
 impl<T> Clone for DirEntry<T> {
     fn clone(&self) -> Self {
         Self {
@@ -66,7 +65,7 @@ impl<T> DirEntry<T> {
         self.file_type.is_dir()
     }
 
-    /// Returns the depth of this entry relative to the traversal root.
+    /// Returns the depth relative to the traversal root.
     #[inline]
     pub fn depth(&self) -> usize {
         self.depth
@@ -81,10 +80,22 @@ impl<T> DirEntry<T> {
     }
 }
 
-#[cfg(unix)]
-impl std::os::unix::fs::DirEntryExt for DirEntry {
-    fn ino(&self) -> u64 {
-        self.ino
+#[cfg(windows)]
+impl<T> DirEntry<T> {
+    /// Whether this entry is a reparse point.
+    ///
+    /// A cycle on Windows needs one somewhere along the path: NTFS allows hard
+    /// links to files only, so a tree of plain directories cannot close a
+    /// loop. The attribute comes with the directory scan, so the answer costs
+    /// nothing — but it describes the entry itself, and resolving a followed
+    /// symlink replaces the stored metadata with the target's, which is a
+    /// plain directory. Only meaningful for an unfollowed entry.
+    pub(crate) fn is_reparse_point(&self) -> bool {
+        use std::os::windows::fs::MetadataExt;
+
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        self.metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
 }
 

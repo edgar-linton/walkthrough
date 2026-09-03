@@ -13,12 +13,6 @@ inputs:
 runs:
   using: composite
   steps:
-    # GitHub-hosted runners ship rustup preinstalled, and rustup resolves
-    # rust-toolchain.toml through its directory override the moment any
-    # proxied command runs here, installing the pinned toolchain on demand —
-    # no separate toolchain-install action needed. `rustc -V` is that first
-    # call, so the toolchain is guaranteed installed before rust-cache and
-    # any `rustup component add` below need it.
     - shell: bash
       run: rustc -V
     - if: inputs.components != ''
