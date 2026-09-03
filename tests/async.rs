@@ -106,6 +106,30 @@ fn loop_tree() -> Option<TempDir> {
 
 /// ```text
 /// root/
+///   a/
+///     b/
+///       j  ->  root/a   (directory junction)
+/// ```
+/// A junction is a reparse point that needs no privileges to create, unlike a
+/// symlink, so this fixture is available wherever [`loop_tree`] is not.
+/// Returns `None` if `mklink` is unavailable.
+#[cfg(windows)]
+fn junction_loop_tree() -> Option<TempDir> {
+    let tmp = TempDir::new().unwrap();
+    let r = tmp.path();
+    let a = r.join("a");
+    fs::create_dir_all(a.join("b")).unwrap();
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(a.join("b").join("j"))
+        .arg(&a)
+        .output()
+        .ok()?;
+    out.status.success().then_some(tmp)
+}
+
+/// ```text
+/// root/
 ///   dangling  ->  __no_such_target__
 /// ```
 fn dangling_symlink_tree() -> Option<TempDir> {
@@ -842,4 +866,49 @@ async fn test_async_unix_direntry_ino_is_nonzero() {
         .next()
         .unwrap();
     assert!(entry.ino() > 0);
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn test_async_windows_junction_without_follow_links_is_bounded() {
+    let Some(tmp) = junction_loop_tree() else {
+        return;
+    };
+    // Bounded so a missed loop fails the test rather than hanging it.
+    let (oks, errs): (Vec<_>, Vec<_>) = walk_all(AsyncWalkDir::new(tmp.path()).max_depth(12))
+        .await
+        .into_iter()
+        .partition(Result::is_ok);
+    let entries: Vec<_> = oks.into_iter().map(Result::unwrap).collect();
+    let errors: Vec<_> = errs.into_iter().map(Result::unwrap_err).collect();
+
+    if entries.iter().any(|e| e.file_name() == "j" && e.is_dir()) {
+        // Windows reported the junction as a plain directory, so the walk
+        // descended through it and the reparse point had to arm loop
+        // detection. This is the branch the arming exists for, and it cannot
+        // be forced on NTFS, where a junction reads as a link instead.
+        assert!(errors.iter().any(|e| e.is_loop()), "{errors:?}");
+    } else {
+        // A junction reporting as a link is never descended into, so nothing
+        // arms and no handle is opened: a, a/b and a/b/j, and no error.
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(entries.iter().filter(|e| e.depth() > 0).count(), 3);
+    }
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn test_async_windows_junction_loop_with_follow_links_returns_error() {
+    // A junction needs no privileges, so unlike `loop_tree` this reaches loop
+    // detection through a reparse point wherever the tests run.
+    let Some(tmp) = junction_loop_tree() else {
+        return;
+    };
+    let results = walk_all(
+        AsyncWalkDir::new(tmp.path())
+            .follow_links(true)
+            .max_depth(12),
+    )
+    .await;
+    assert!(results.into_iter().any(|r| r.is_err_and(|e| e.is_loop())));
 }

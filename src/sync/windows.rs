@@ -5,7 +5,7 @@ use std::{
         fs::{MetadataExt, OpenOptionsExt},
         io::AsRawHandle,
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use windows_sys::Win32::Storage::FileSystem::{
@@ -88,25 +88,30 @@ impl DirEntry<Blocking> {
     }
 
     pub(crate) fn ancestor(&self) -> Option<Ancestor> {
-        // FILE_FLAG_BACKUP_SEMANTICS is required for a directory handle;
-        // without it CreateFile returns ERROR_ACCESS_DENIED.
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-            .open(self.path())
-            .ok()?;
-        let handle = file.as_raw_handle();
-
-        unsafe {
-            let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
-            if GetFileInformationByHandle(handle, &mut info) != 0 {
-                let index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
-                return Some(Ancestor {
-                    volume: info.dwVolumeSerialNumber,
-                    index,
-                });
-            }
-        }
-        None
+        ancestor_of(self.path())
     }
+}
+
+/// Identity of the directory at `path`, as far as it can be obtained.
+pub(super) fn ancestor_of(path: &Path) -> Option<Ancestor> {
+    // FILE_FLAG_BACKUP_SEMANTICS is required for a directory handle;
+    // without it CreateFile returns ERROR_ACCESS_DENIED.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    let handle = file.as_raw_handle();
+
+    unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        if GetFileInformationByHandle(handle, &mut info) != 0 {
+            let index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+            return Some(Ancestor {
+                volume: info.dwVolumeSerialNumber,
+                index,
+            });
+        }
+    }
+    None
 }

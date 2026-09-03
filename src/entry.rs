@@ -80,19 +80,24 @@ impl<T> DirEntry<T> {
     }
 }
 
-/// Whether ancestor bookkeeping may be skipped when `follow_links` is off.
-///
-/// True on Unix: reaching an already-visited directory requires traversing a
-/// symlink, so with links unfollowed no cycle is reachable and the `stat` per
-/// directory that identity costs buys nothing.
-///
-/// False on Windows: a directory junction can be reported as a directory
-/// rather than a link, so a cycle through one stays reachable. A missed loop
-/// walks forever.
-#[cfg(unix)]
-pub(crate) const LOOPS_NEED_FOLLOW_LINKS: bool = true;
 #[cfg(windows)]
-pub(crate) const LOOPS_NEED_FOLLOW_LINKS: bool = false;
+impl<T> DirEntry<T> {
+    /// Whether this entry is a reparse point.
+    ///
+    /// A cycle on Windows needs one somewhere along the path: NTFS allows hard
+    /// links to files only, so a tree of plain directories cannot close a
+    /// loop. The attribute comes with the directory scan, so the answer costs
+    /// nothing — but it describes the entry itself, and resolving a followed
+    /// symlink replaces the stored metadata with the target's, which is a
+    /// plain directory. Only meaningful for an unfollowed entry.
+    pub(crate) fn is_reparse_point(&self) -> bool {
+        use std::os::windows::fs::MetadataExt;
+
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        self.metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+}
 
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]

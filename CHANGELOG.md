@@ -37,6 +37,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Performance
 
+- Windows no longer opens a handle per directory just to detect loops. Identity
+  there means `CreateFile` + `GetFileInformationByHandle`, the most expensive
+  per-directory operation on the platform, and both walkers ran it for every
+  directory they descended into even with `follow_links` off — where Unix skips
+  it entirely, since without following a link no cycle is reachable. Windows
+  cannot make that assumption, because a directory junction can be reported as
+  a plain directory rather than a link, but it can make the narrower one that a
+  cycle needs a reparse point somewhere on the path: NTFS allows hard links to
+  files only. The directory scan's own record carries
+  `FILE_ATTRIBUTE_REPARSE_POINT`, so identity now waits for the first reparse
+  point on the current path and then fills in the levels above it in one pass.
+  A tree holding no reparse point at all, which is the overwhelming majority,
+  opens no handle.
+
 - The synchronous walker now skips ancestor bookkeeping on Unix when
   `follow_links` is off, as the asynchronous one already did — without
   following a link no cycle is reachable, so the `stat` per directory that

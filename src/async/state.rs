@@ -11,7 +11,7 @@ use std::{
 
 use tokio::{fs, task::JoinSet};
 
-use crate::{DirEntry, Error, LOOPS_NEED_FOLLOW_LINKS, Result, iter::WalkDirOptions};
+use crate::{DirEntry, Error, Result, iter::WalkDirOptions};
 
 /// Async state marker.
 #[derive(Debug)]
@@ -666,6 +666,8 @@ impl AsyncWalkDir {
                     start: Some(start),
                     stack: vec![],
                     ancestors: vec![],
+                    #[cfg(windows)]
+                    reparse_depth: None,
                     opts: self.opts,
                     async_opts: self.async_opts,
                     sort_by: self.sort_by,
@@ -720,6 +722,8 @@ struct WalkerState {
     sort_by: Option<Sorter>,
     filter: Option<Arc<Filter>>,
     ancestors: Vec<crate::Ancestor>,
+    #[cfg(windows)]
+    reparse_depth: Option<usize>,
     stack: Vec<DirStream>,
     start: Option<Result<DirEntry<Async>>>,
     yielded: usize,
@@ -737,9 +741,7 @@ impl WalkerState {
     async fn push_dir(&mut self, entry: &DirEntry<Async>) -> Result<()> {
         let depth = entry.depth();
 
-        // One `stat` per directory, skipped where a loop cannot occur; see
-        // `LOOPS_NEED_FOLLOW_LINKS`.
-        if self.opts.follow_links || !LOOPS_NEED_FOLLOW_LINKS {
+        if self.track_ancestor(entry).await {
             self.ancestors.truncate(depth);
 
             if let Some(ancestor) = entry.ancestor().await {
@@ -777,6 +779,67 @@ impl WalkerState {
             });
         }
         Ok(())
+    }
+
+    /// Whether a cycle through `entry` is reachable, and its identity
+    /// therefore worth the `stat` it costs.
+    ///
+    /// Reaching an already-visited directory on Unix means traversing a
+    /// symlink, so with links unfollowed no cycle exists to find.
+    #[cfg(unix)]
+    async fn track_ancestor(&mut self, _entry: &DirEntry<Async>) -> bool {
+        self.opts.follow_links
+    }
+
+    /// Whether a cycle through `entry` is reachable, and its identity
+    /// therefore worth the handle open it costs.
+    ///
+    /// Unfollowed links do not rule a cycle out here the way they do on Unix,
+    /// because a directory junction can be reported as a plain directory. A
+    /// reparse point somewhere on the path is what a cycle does need, and the
+    /// directory scan already says which entries are one, so identity — the
+    /// most expensive per-directory operation on Windows — waits for the first
+    /// of them and backfills the levels above it. A tree holding no reparse
+    /// point at all, which is the overwhelming majority, opens no handle.
+    #[cfg(windows)]
+    async fn track_ancestor(&mut self, entry: &DirEntry<Async>) -> bool {
+        if self.opts.follow_links {
+            return true;
+        }
+        let depth = entry.depth();
+        // A reparse point recorded at this depth or deeper sits in a subtree
+        // the walk has left, so it is no longer on the path.
+        if self.reparse_depth.is_some_and(|d| d >= depth) {
+            self.reparse_depth = None;
+        }
+        if self.reparse_depth.is_none() {
+            if !entry.is_reparse_point() {
+                return false;
+            }
+            self.reparse_depth = Some(depth);
+            self.backfill_ancestors(entry.path(), depth).await;
+        }
+        true
+    }
+
+    /// Records identity for the levels above `path`, once per reparse point
+    /// that arms detection.
+    ///
+    /// Nothing above the first one was recorded, and a cycle is compared
+    /// against the whole path. `O(depth)`.
+    #[cfg(windows)]
+    async fn backfill_ancestors(&mut self, path: &Path, depth: usize) {
+        // Anything still held belongs to a subtree the walk has left.
+        self.ancestors.clear();
+        // The walk builds every path by joining one component per level, so
+        // the levels above `path` are exactly its ancestors, deepest first.
+        let mut above: Vec<&Path> = path.ancestors().skip(1).take(depth).collect();
+        above.reverse();
+        for level in above {
+            if let Some(ancestor) = super::windows::ancestor_of(level).await {
+                self.ancestors.push(ancestor);
+            }
+        }
     }
 
     async fn collect_ordered(
